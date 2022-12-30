@@ -25,7 +25,7 @@ def to_str(text) -> str:
 class StreamClosedException(Exception):
     """JSON RPC stream is closed."""
 
-    pass  # pylint: disable=unnecessary-pass
+    # pylint: disable=unnecessary-pass
 
 
 class JsonWriter:
@@ -49,9 +49,7 @@ class JsonWriter:
         with self._lock:
             content = json.dumps(data)
             length = len(content.encode("utf-8"))
-            self._writer.write(
-                f"{CONTENT_LENGTH}{length}\r\n\r\n{content}".encode("utf-8")
-            )
+            self._writer.write(f"{CONTENT_LENGTH}{length}\r\n\r\n{content}".encode("utf-8"))
             self._writer.flush()
 
 
@@ -154,7 +152,7 @@ class ProcessManager:
         self._processes[workspace] = proc
         self._rpc[workspace] = create_json_rpc(proc.stdout, proc.stdin)
 
-        def _monitor_process():
+        def monitor_process():
             proc.wait()
             with self._lock:
                 try:
@@ -164,7 +162,7 @@ class ProcessManager:
                 except:  # pylint: disable=bare-except
                     pass
 
-        self._thread_pool.submit(_monitor_process)
+        self._thread_pool.submit(monitor_process)
 
     def get_json_rpc(self, workspace: str) -> JsonRpc:
         """Gets the JSON-RPC wrapper for the a given id."""
@@ -239,9 +237,7 @@ def run_over_json_rpc(
     data = rpc.receive_data()
 
     if data["id"] != msg_id:
-        return RpcRunResult(
-            "", f"Invalid result for request: {json.dumps(msg, indent=4)}"
-        )
+        return RpcRunResult("", f"Invalid result for request: {json.dumps(msg, indent=4)}")
 
     if "error" in data:
         if data.get("exception", False):

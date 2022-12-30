@@ -157,16 +157,16 @@ def run_path(
             cwd=cwd,
         ) as process:
             return RunResult(*process.communicate(input=source))
-    else:
-        result = subprocess.run(
-            argv,
-            encoding="utf-8",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            cwd=cwd,
-        )
-        return RunResult(result.stdout, result.stderr)
+
+    result = subprocess.run(
+        argv,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        cwd=cwd,
+    )
+    return RunResult(result.stdout, result.stderr)
 
 
 def run_api(

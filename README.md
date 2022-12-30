@@ -1,6 +1,6 @@
-# Template for VS Code python tools extensions
+# Pyrefact VS Code extension
 
-This is a template repository to get you started on building a VS Code extension for your favorite python tool. It could be a linter, formatter, or code analysis, or all of those together. This template will give you the basic building blocks you need to build a VS Code extension for it.
+This is a VSCode extension for [Pyrefact](https://github.com/OlleLindgren/pyrefact). It is based on the [Microsoft Python VS Code template](https://github.com/microsoft/vscode-python-tools-extension-template).
 
 ## Programming Languages and Frameworks
 
@@ -13,44 +13,39 @@ The TypeScript part handles working with VS Code and its UI. The extension templ
 ## Requirements
 
 1. VS Code 1.64.0 or greater
-1. Python 3.7 or greater
+1. Python 3.8 or greater
 1. node >= 14.19.0
 1. npm >= 8.3.0 (`npm` is installed with node, check npm version, use `npm install -g npm@8.3.0` to update)
 1. Python extension for VS Code
 
 You should know to create and work with python virtual environments.
 
-## Getting Started
+## Setting up a development environment
 
-1. Use this [template to create your repo](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
-1. Check-out your repo locally on your development machine.
 1. Create and activate a python virtual environment for this project in a terminal. Be sure to use the minimum version of python for your tool. This template was written to work with python 3.7 or greater.
 1. Install `nox` in the activated environment: `python -m pip install nox`.
 1. Add your favorite tool to `requirements.in`
 1. Run `nox --session setup`.
 1. **Optional** Install test dependencies `python -m pip install -r src/test/python_tests/requirements.txt`. You will have to install these to run tests from the Test Explorer.
-1. Open `package.json`, look for and update the following things:
-    1. Find and replace `<pytool-module>` with module name for your tool. This will be used internally to create settings namespace, register commands, etc. Recommendation is to use lower case version of the name, no spaces, `-` are ok. For example, replacing `<pytool-module>` with `pylint` will lead to settings looking like `pylint.args`. Another example, replacing `<pytool-module>` with `black-formatter` will make settings look like `black-formatter.args`.
-    1. Find and replace `<pytool-display-name>` with display name for your tool. This is used as the title for the extension in market place, extensions view, output logs, etc. For example, for the `black` extension this is `Black Formatter`.
 1. Install node packages using `npm install`.
 
 ## Features of this Template
 
-After finishing the getting started part, this template would have added the following. Assume `<pytool-module>` was replaced with `mytool`, and `<pytool-display-name>` with`My Tool`:
+After finishing the getting started part, this template would have added the following:
 
-1. A command `My Tool: Restart Server` (command Id: `mytool.restart`).
+1. A command `Pyrefact: Restart Server` (command Id: `pyrefact.restart`).
 1. Following setting:
-    - `mytool.logLevel`
-    - `mytool.args`
-    - `mytool.path`
-    - `mytool.importStrategy`
-    - `mytool.interpreter`
-    - `mytool.showNotification`
+    - `pyrefact.logLevel`
+    - `pyrefact.args`
+    - `pyrefact.path`
+    - `pyrefact.importStrategy`
+    - `pyrefact.interpreter`
+    - `pyrefact.showNotification`
 1. Following triggers for extension activation:
     - On Language `python`.
     - On File with `.py` extension found in the opened workspace.
-    - On Command `mytool.restart`.
-1. Output Channel for logging `Output` > `My Tool`
+    - On Command `pyrefact.restart`.
+1. Output Channel for logging `Output` > `Pyrefact`
 
 ## Adding features from your tool
 
@@ -142,9 +137,3 @@ Also make sure that the inserted paths in `server.py` are pointing to the right 
 This can occurs if `bundled/libs` is empty. That is the folder where we put your tool and other dependencies. Be sure to follow the build steps need for creating and bundling the required libs.
 
 Common one is [_pygls_][pygls] module not found.
-
-# TODO: The maintainer of this repo has not yet edited this file
-
-**Repo Owner** Make sure you update this. As a repository owner you will need to update this file with specific instructions for your extension.
-
-[pygls]: https://github.com/openlawlibrary/pygls
