@@ -2,21 +2,21 @@
     "name": "pyrefact",
     "displayName": "Pyrefact",
     "description": "Formatting python files using `pyrefact`.",
-    "version": "2022.0.0-dev",
+    "version": "2022.0.0",
     "preview": true,
     "serverInfo": {
         "name": "Pyrefact",
         "module": "pyrefact"
     },
-    "publisher": "<my-publisher>",
+    "publisher": "olleln",
     "license": "MIT",
-    "homepage": "https://github.com/<my-github>/<my-extension-project>",
+    "homepage": "https://github.com/OlleLindgren/pyrefact-vscode-extension",
     "repository": {
         "type": "git",
-        "url": "https://github.com/<my-github>/<my-extension-project>.git"
+        "url": "https://github.com/OlleLindgren/pyrefact-vscode-extension.git"
     },
     "bugs": {
-        "url": "https://github.com/<my-github>/<my-extension-project>/issues"
+        "url": "https://github.com/OlleLindgren/pyrefact-vscode-extension/issues"
     },
     "galleryBanner": {
         "color": "#1e415e",
@@ -24,13 +24,19 @@
     },
     "keywords": [
         "python",
-        "pyrefact"
+        "pyrefact",
+        "formatter",
+        "formatting",
+        "black",
+        "isort",
+        "math",
+        "performance",
+        "refactoring"
     ],
     "engines": {
         "vscode": "^1.72.0"
     },
     "categories": [
-        "Programming Languages",
         "Linters",
         "Formatters"
     ],

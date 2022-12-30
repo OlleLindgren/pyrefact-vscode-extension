@@ -1,6 +1,12 @@
-# TODO: The maintainer of this repo has not yet edited this file
+# Security
 
-**Repo Owner** Make sure you update this. As a repository owner you will need to decide how you want to handle reporting of security issues for your project.
+Pyrefact is designed to solve a great number of python anti-patterns and performance issues that often arise in everyday python code. In so doing, there are three security concerns known to me that users should be aware of:
+
+* Running pyrefact sometimes requires pyrefact to run tiny parts of your code, for example like list comprehensions with only builtin functions and similar things. This should not normally be a security problem, but it is almost surely possible to construct code that could exploit this and execute arbitrary code. Therefore, only ever run pyrefact or this extension on trusted code.
+* Since pyrefact will rewrite code, it may be possible that security-critical code is rewritten in a way that is not equivalent to what it originally was, and thus less secure.
+* Keep in mind that pyrefact will recursively traverse any directories you give it. In this way, pyrefact may rewrite code that you didn't intend to change, for example if you feed it a whole source directory that also happens to contain a virtual environment or similar, or if it finds a symlink somewhere you didn't intend for it to look.
+
+TLDR: Be very careful to only run pyrefact on code that you know and trust.
 
 ---
 
