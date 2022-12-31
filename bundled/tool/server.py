@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import pathlib
@@ -77,10 +78,6 @@ TOOL_ARGS = []  # default arguments always passed to your tool.
 @LSP_SERVER.feature(lsp.FORMATTING)
 def formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit] | None:
     """LSP handler for textDocument/formatting request."""
-    # If your tool is a formatter you can use this handler to provide
-    # formatting support on save. You have to return an array of lsp.TextEdit
-    # objects, to provide your formatted results.
-
     document = LSP_SERVER.workspace.get_document(params.text_document.uri)
     edits = _formatting_helper(document)
     if edits:
@@ -92,14 +89,10 @@ def formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit] | Non
 
 
 @LSP_SERVER.feature(lsp.RANGE_FORMATTING)
-def range_formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit] | None:
+def range_formatting(params: lsp.DocumentRangeFormattingParams) -> list[lsp.TextEdit] | None:
     """LSP handler for textDocument/formatting request."""
-    # If your tool is a formatter you can use this handler to provide
-    # formatting support on save. You have to return an array of lsp.TextEdit
-    # objects, to provide your formatted results.
-
     document = LSP_SERVER.workspace.get_document(params.text_document.uri)
-    edits = _formatting_helper(document)
+    edits = _formatting_helper(document, params.range)
     if edits:
         return edits
 
@@ -108,20 +101,20 @@ def range_formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit]
     return None
 
 
-def _formatting_helper(document: workspace.Document) -> list[lsp.TextEdit] | None:
-    # TODO: For formatting on save support the formatter you use must support
-    # formatting via stdin.
-    # Read, and update_run_tool_on_document and _run_tool functions as needed
-    # for your formatter.
-    result = _run_tool_on_document(document, use_stdin=True)
+def _formatting_helper(document: workspace.Document, selection_range: lsp.Range | None = None) -> list[lsp.TextEdit] | None:
+    try:
+        result = _run_tool_on_document(document, use_stdin=True, selection_range=selection_range)
+    except InvalidSelection:
+        return None
+    document_start = lsp.Position(line=0, character=0)
+    document_end = lsp.Position(line=len(document.lines), character=0)
+    if selection_range is None:
+        selection_range = lsp.Range(start=document_start, end=document_end)
     if result.stdout:
         new_source = _match_line_endings(document, result.stdout)
         return [
             lsp.TextEdit(
-                range=lsp.Range(
-                    start=lsp.Position(line=0, character=0),
-                    end=lsp.Position(line=len(document.lines), character=0),
-                ),
+                range=selection_range,
                 new_text=new_source,
             )
         ]
@@ -212,6 +205,35 @@ def _get_settings_by_document(document: workspace.Document | None):
     return list(WORKSPACE_SETTINGS.values())[0]
 
 
+@functools.lru_cache(maxsize=1)
+def _get_line_start_charnos(source: str) -> Sequence[int]:
+    start = 0
+    charnos = []
+    for line in source.splitlines(keepends=True):
+        charnos.append(start)
+        start += len(line)
+    return charnos
+
+
+class InvalidSelection(ValueError):
+    """Selected source range is not valid"""
+
+
+def _get_text_subset(source: str, selection_range: lsp.Range) -> str:
+    line_start_charnos = _get_line_start_charnos(source)
+
+    try:
+        start_charno = line_start_charnos[selection_range.start.line] + selection_range.start.character
+    except IndexError:
+        raise InvalidSelection("Start lineno is larger than the length of source")
+    try:
+        end_charno = line_start_charnos[selection_range.end.line] + selection_range.end.character
+    except IndexError:
+        end_charno = len(source)
+
+    return source[start_charno:end_charno]
+
+
 # *****************************************************
 # Internal execution APIs.
 # *****************************************************
@@ -219,6 +241,7 @@ def _run_tool_on_document(
     document: workspace.Document,
     use_stdin: bool = False,
     extra_args: Sequence[str] = [],
+    selection_range: lsp.Range | None = None,
 ) -> utils.RunResult | None:
     """Runs tool on the given document.
 
@@ -258,19 +281,13 @@ def _run_tool_on_document(
     argv += TOOL_ARGS + settings["args"] + extra_args
 
     if use_stdin:
-        # TODO: update these to pass the appropriate arguments to provide document contents
-        # to tool via stdin.
-        # For example, for pylint args for stdin looks like this:
-        #     pylint --from-stdin <path>
-        # Here `--from-stdin` path is used by pylint to make decisions on the file contents
-        # that are being processed. Like, applying exclusion rules.
-        # It should look like this when you pass it:
-        #     argv += ["--from-stdin", document.path]
-        # Read up on how your tool handles contents via stdin. If stdin is not supported use
-        # set use_stdin to False, or provide path, what ever is appropriate for your tool.
-        argv += ["--from-stdin", document.path]
+        argv += ["--from-stdin", "-s"]
     else:
         argv += ["-s", document.path]
+
+    source = document.source
+    if selection_range is not None:
+        source = _get_text_subset(source, selection_range)
 
     if use_path:
         # This mode is used when running executables.
@@ -280,7 +297,7 @@ def _run_tool_on_document(
             argv=argv,
             use_stdin=use_stdin,
             cwd=cwd,
-            source=document.source.replace("\r\n", "\n"),
+            source=source.replace("\r\n", "\n"),
         )
         if result.stderr:
             log_to_output(result.stderr)
@@ -297,7 +314,7 @@ def _run_tool_on_document(
             argv=argv,
             use_stdin=use_stdin,
             cwd=cwd,
-            source=document.source,
+            source=source,
         )
         if result.exception:
             log_error(result.exception)
@@ -322,7 +339,7 @@ def _run_tool_on_document(
                     argv=argv,
                     use_stdin=use_stdin,
                     cwd=cwd,
-                    source=document.source,
+                    source=source,
                 )
             except Exception:
                 log_error(traceback.format_exc(chain=True))
