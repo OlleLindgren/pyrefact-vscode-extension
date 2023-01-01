@@ -1,139 +1,140 @@
-# Pyrefact VS Code extension
+# Pyrefact
 
-This is a VSCode extension for [Pyrefact](https://github.com/OlleLindgren/pyrefact). It is based on the [Microsoft Python VS Code template](https://github.com/microsoft/vscode-python-tools-extension-template).
+This extension adds [Pyrefact](https://pypi.org/project/pyrefact/) as a "formatter" in VSCode.
 
-## Programming Languages and Frameworks
+Pyrefact is not primarily a formatter, though. It will identify a great deal of anti-patterns and easy ways to improve your code, and apply those completely automatically.
 
-The extension template has two parts, the extension part and language server part. The extension part is written in TypeScript, and language server part is written in Python over the [_pygls_][pygls] (Python language server) library.
+## Examples
 
-For the most part you will be working on the python part of the code when using this template. You will be integrating your tool with the extension part using the [Language Server Protocol](https://microsoft.github.io/language-server-protocol). [_pygls_][pygls] currently works on the [version 3.16 of LSP](https://microsoft.github.io/language-server-protocol/specifications/specification-3-16/).
+Below follows a number of examples to illustrate the sort of things pyrefact can do.
 
-The TypeScript part handles working with VS Code and its UI. The extension template comes with few settings pre configured that can be used by your tool. If you need to add new settings to support your tool, you will have to work with a bit of TypeScript. The extension has examples for few settings that you can follow. You can also look at extensions developed by our team for some of the popular tools as reference.
+### Converting loops into constant expressions
 
-## Requirements
+```python
+q = 3
+w = list()
+for a in range(-1, 10):
+    for k in range(-1, 1):
+        w.append(a ** 2 + q + k ** 2)
+y = sum(w)
+print(y)
+```
 
-1. VS Code 1.64.0 or greater
-1. Python 3.8 or greater
-1. node >= 14.19.0
-1. npm >= 8.3.0 (`npm` is installed with node, check npm version, use `npm install -g npm@8.3.0` to update)
-1. Python extension for VS Code
+```python
+q = 3
+y = 22 * q + 583
+print(y)
+```
 
-You should know to create and work with python virtual environments.
+### Converting math loops into np.matmul()
 
-## Setting up a development environment
+```python
+import numpy as np
 
-1. Create and activate a python virtual environment for this project in a terminal. Be sure to use the minimum version of python for your tool. This template was written to work with python 3.7 or greater.
-1. Install `nox` in the activated environment: `python -m pip install nox`.
-1. Add your favorite tool to `requirements.in`
-1. Run `nox --session setup`.
-1. **Optional** Install test dependencies `python -m pip install -r src/test/python_tests/requirements.txt`. You will have to install these to run tests from the Test Explorer.
-1. Install node packages using `npm install`.
+i, j, k = 10, 11, 12
 
-## Features of this Template
+a = np.random.random((i, j))
+b = np.random.random((j, k))
 
-After finishing the getting started part, this template would have added the following:
+u = np.array(
+    [
+        [
+            np.sum(
+                a__ * b__
+                for a__, b__ in zip(a_, b_)
+            )
+            for a_ in a
+        ]
+        for b_ in b.T
+    ]
+).T
 
-1. A command `Pyrefact: Restart Server` (command Id: `pyrefact.restart`).
-1. Following setting:
-    - `pyrefact.logLevel`
-    - `pyrefact.args`
-    - `pyrefact.path`
-    - `pyrefact.importStrategy`
-    - `pyrefact.interpreter`
-    - `pyrefact.showNotification`
-1. Following triggers for extension activation:
-    - On Language `python`.
-    - On File with `.py` extension found in the opened workspace.
-    - On Command `pyrefact.restart`.
-1. Output Channel for logging `Output` > `Pyrefact`
+print(u)
+```
 
-## Adding features from your tool
+```python
+import numpy as np
 
-Open `bundled/tool/server.py`, here is where you will do most of the changes. Look for `TODO` comments there for more details.
+i, j, k = 10, 11, 12
 
-Also look for `TODO` in other locations in the entire template:
+a = np.random.random((i, j))
+b = np.random.random((j, k))
 
-- `bundled/tool/runner.py` : You may need to update this in some special cases.
-- `src/test/python_tests/test_server.py` : This is where you will write tests. There are two incomplete examples provided there to get you started.
-- All the markdown files in this template have some `TODO` items, be sure to check them out as well. That includes updating the LICENSE file, even if you want to keep it MIT License.
+u = np.matmul(a, b)
 
-References, to other extension created by our team using the template:
+print(u)
+```
 
-- Protocol reference: <https://microsoft.github.io/language-server-protocol/specifications/specification-3-16/>
-- Implementation showing how to handle Linting on file `open`, `save`, and `close`. [Pylint](https://github.com/microsoft/vscode-pylint/tree/main/bundled/tool)
-- Implementation showing how to handle Formatting. [Black Formatter](https://github.com/microsoft/vscode-black-formatter/tree/main/bundled/tool)
-- Implementation showing how to handle Code Actions. [isort](https://github.com/microsoft/vscode-isort/blob/main/bundled/tool)
+### De-indenting nested code
 
-## Building and Run the extension
+```python
+def f(x) -> int:
+    if x == 1:
+        x = 2
+    else:
+        if x == 3:
+            x = 7
+        elif x == 8:
+            x = 99
+        else:
+            if x >= 912:
+                x = -2
+            elif x ** x > x ** 3:
+                x = -1
+            else:
+                x = 14
 
-Run the `Debug Extension and Python` configuration form VS Code. That should build and debug the extension in host window.
+    return x
 
-Note: if you just want to build you can run the build task in VS Code (`ctrl`+`shift`+`B`)
+```
 
-## Debugging
+```python
+def _f(x) -> int:
+    if x == 1:
+        return 2
+    if x == 3:
+        return 7
+    if x == 8:
+        return 99
+    if x >= 912:
+        return -2
+    if x**x > x**3:
+        return -1
 
-To debug both TypeScript and Python code use `Debug Extension and Python` debug config. This is the recommended way. Also, when stopping, be sure to stop both the Typescript, and Python debug sessions. Otherwise, it may not reconnect to the python session.
+    return 14
+```
 
-To debug only TypeScript code, use `Debug Extension` debug config.
+### Removing dead code
 
-To debug a already running server or in production server, use `Python Attach`, and select the process that is running `server.py`.
+```python
+import random
+import sys
 
-## Adding new Settings or Commands
+def f(x: int) -> int:
+    import heapq
+    y = e = 112
 
-You can add new settings by adding details for the settings in `package.json` file. To pass this configuration to your python tool server (i.e, `server.py`) update the `settings.ts` as need. There are examples of different types of settings in that file that you can base your new settings on.
+    if x >= 2:
+        d = 12
 
-You can follow how `restart` command is implemented in `package.json` and `extension.ts` for how to add commands. You cam also contribute commands from Python via the Language Server Protocol.
+    if []:
+        x *= 99
 
-## Testing
+    if x == 3:
+        y = x ** 13
+        return 8
+    else:
+        return 19
+while False:
+    sys.exit(0)
+```
 
-See `src\test\python_tests\test_server.py` for starting point. See, other referred projects here for testing various aspects of running the tool over LSP.
+```python
+def f(x: int) -> int:
+    if x == 3:
+        return 8
 
-If you have installed the test requirements you should be able to see the tests in the test explorer.
+    return 19
+```
 
-You can also run all tests using `nox --session tests` command.
-
-## Linting
-
-Run `nox --session lint` to run linting on both Python and TypeScript code. Please update the nox file if you want to use a different linter and formatter.
-
-## Packaging and Publishing
-
-1. Update various fields in `package.json`. At minimum, check the following fields and update them accordingly. See [extension manifest reference](https://code.visualstudio.com/api/references/extension-manifest) to add more fields:
-    - `"publisher"`: Update this to your publisher id from <https://marketplace.visualstudio.com/>.
-    - `"version"`: See <https://semver.org/> for details of requirements and limitations for this field.
-    - `"license"`: Update license as per your project. Defaults to `MIT`.
-    - `"keywords"`: Update keywords for your project, these will be used when searching in the VS Code marketplace.
-    - `"categories"`: Update categories for your project, makes it easier to filter in the VS Code marketplace.
-    - `"homepage"`, `"repository"`, and `"bugs"` : Update URLs for these fields to point to your project.
-    - **Optional** Add `"icon"` field with relative path to a image file to use as icon for this project.
-1. Make sure to check the following markdown files:
-    - **REQUIRED** First time only: `CODE_OF_CONDUCT.md`, `LICENSE`, `SUPPORT.md`, `SECURITY.md`
-    - Every Release: `CHANGELOG.md`
-1. Build package using `nox --session build_package`.
-1. Take the generated `.vsix` file and upload it to your extension management page <https://marketplace.visualstudio.com/manage>.
-
-To do this from the command line see here <https://code.visualstudio.com/api/working-with-extensions/publishing-extension>
-
-## Upgrading Dependencies
-
-Dependabot yml is provided to make it easy to setup upgrading dependencies in this extension. Be sure to add the labels used in the dependabot to your repo.
-
-To manually upgrade your local project:
-
-1. Create a new branch
-1. Run `npm update` to update node modules.
-1. Run `nox --session setup` to upgrade python packages.
-
-## Troubleshooting
-
-### Changing path or name of `server.py` something else
-
-If you want to change the name of `server.py` to something else, you can. Be sure to update `constants.ts` and `src\test\python_tests\lsp_test_client\session.py`.
-
-Also make sure that the inserted paths in `server.py` are pointing to the right folders to pick up the dependent packages.
-
-### Module not found errors
-
-This can occurs if `bundled/libs` is empty. That is the folder where we put your tool and other dependencies. Be sure to follow the build steps need for creating and bundling the required libs.
-
-Common one is [_pygls_][pygls] module not found.
+A complete-ish list of the things pyrefact can do can be found on the [pyrefact github page](https://github.com/OlleLindgren/pyrefact).
