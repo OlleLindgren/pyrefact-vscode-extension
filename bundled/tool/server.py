@@ -19,6 +19,8 @@ import utils
 # Update sys.path before importing any bundled libraries.
 # **********************************************************
 
+MAX_SEQUENTIAL_NEWLINES = 3
+
 
 def update_sys_path(path_to_add: str, strategy: str) -> None:
     """Add given path to `sys.path`."""
@@ -105,24 +107,64 @@ def range_formatting(params: lsp.DocumentRangeFormattingParams) -> list[lsp.Text
     return None
 
 
+def _count_newlines_at_start_end(source: str) -> Tuple[int, int]:
+    split = source.splitlines(keepends=False)
+    split_keepends = source.splitlines(keepends=True)
+    newlines_before = newlines_after = 0
+    for line in split:
+        if line.strip():
+            break
+
+        newlines_before += 1
+
+    for line in reversed(split):
+        if line.strip():
+            break
+
+        newlines_after += 1
+
+    if split_keepends[-1] != split[-1]:
+        newlines_after += 1
+
+    return newlines_before, newlines_after
+
+
 def _formatting_helper(document: workspace.Document, selection_range: lsp.Range | None = None) -> list[lsp.TextEdit] | None:
     try:
         result = _run_tool_on_document(document, use_stdin=True, selection_range=selection_range)
     except InvalidSelection:
         return None
+
     document_start = lsp.Position(line=0, character=0)
     document_end = lsp.Position(line=len(document.lines), character=0)
+
+    new_source = result.stdout
+
+    if not new_source:
+        return None
+
+    new_source = _match_line_endings(document, new_source).strip()
+
     if selection_range is None:
         selection_range = lsp.Range(start=document_start, end=document_end)
-    if result.stdout:
-        new_source = _match_line_endings(document, result.stdout)
-        return [
-            lsp.TextEdit(
-                range=selection_range,
-                new_text=new_source,
-            )
-        ]
-    return None
+    else:
+        source_selection = _get_text_subset(document.source, selection_range)
+        expected_before, expected_after = _count_newlines_at_start_end(source_selection)
+        actual_before, actual_after = _count_newlines_at_start_end(new_source)
+        expected_newline_type = _get_line_endings(document.source) or "\n"
+        missing_before = min(MAX_SEQUENTIAL_NEWLINES, expected_before) - actual_before
+        missing_after = min(MAX_SEQUENTIAL_NEWLINES, expected_after) - actual_after
+        if missing_before > 0:
+            new_source = expected_newline_type * missing_before + new_source
+        if missing_after > 0:
+            new_source = new_source + expected_newline_type * missing_after
+
+    return [
+        lsp.TextEdit(
+            range=selection_range,
+            new_text=new_source,
+        )
+    ]
 
 
 def _get_line_endings(lines: list[str]) -> str:
