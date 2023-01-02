@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import pathlib
+import re
 import sys
 import traceback
 from typing import Sequence
@@ -129,7 +130,9 @@ def _count_newlines_at_start_end(source: str) -> Tuple[int, int]:
     return newlines_before, newlines_after
 
 
-def _formatting_helper(document: workspace.Document, selection_range: lsp.Range | None = None) -> list[lsp.TextEdit] | None:
+def _formatting_helper(
+    document: workspace.Document, selection_range: lsp.Range | None = None
+) -> list[lsp.TextEdit] | None:
     try:
         result = _run_tool_on_document(document, use_stdin=True, selection_range=selection_range)
     except InvalidSelection:
@@ -143,7 +146,11 @@ def _formatting_helper(document: workspace.Document, selection_range: lsp.Range 
     if not new_source:
         return None
 
-    new_source = _match_line_endings(document, new_source).strip()
+    new_source = _match_line_endings(document, new_source)
+
+    # Remove empty lines before and after
+    new_source = re.sub(r"\A^(\s*\r?\n)+", "", new_source)
+    new_source = re.sub(r"(\s*\r?\n)+$\Z", "", new_source)
 
     if selection_range is None:
         selection_range = lsp.Range(start=document_start, end=document_end)
