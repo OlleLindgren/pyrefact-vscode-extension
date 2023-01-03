@@ -1,8 +1,8 @@
 # Pyrefact
 
-This extension adds [Pyrefact](https://pypi.org/project/pyrefact/) as a "formatter" in VSCode.
+This extension adds [Pyrefact](https://pypi.org/project/pyrefact/) as a formatter in VSCode.
 
-Pyrefact is not primarily a formatter, though. It will identify a great deal of anti-patterns and easy ways to improve your code, and apply those completely automatically.
+Pyrefact is not primarily a formatter, though. It will identify a great deal of anti-patterns and easy ways to improve your code, and apply those completely automatically. It also removes commented and dead code, and trailing whitespace.
 
 ## Examples
 
@@ -24,6 +24,37 @@ print(y)
 q = 3
 y = 22 * q + 583
 print(y)
+```
+
+### Replacing a loop filling up a set with a set comprehension
+
+```python
+x = set()
+for i in range(100):
+    if i > 3:
+        if i % 8 == 0:
+            x.add(i ** 2)
+```
+
+```python
+x = {i**2 for i in range(100) if i > 3 and i % 8 == 0}
+```
+
+### Replacing a dict with a defaultdict where appropriate
+
+```python
+d = {}
+for x in range(10):
+    if x in d:
+        d[x].append(f(x))
+    else:
+        d[x] = [f(x)]
+```
+
+```python
+d = collections.defaultdict(list)
+for x in range(10):
+    d[x].append(f(x))
 ```
 
 ### Converting math loops into np.matmul()
