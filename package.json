@@ -2,7 +2,7 @@
     "name": "pyrefact",
     "displayName": "Pyrefact",
     "description": "Formatting python files using `pyrefact`.",
-    "version": "2023.0.8",
+    "version": "2023.0.9",
     "preview": true,
     "serverInfo": {
         "name": "Pyrefact",
