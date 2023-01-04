@@ -22,6 +22,7 @@
         "color": "#1e415e",
         "theme": "dark"
     },
+    "icon": "icon.png",
     "keywords": [
         "python",
         "pyrefact",
