@@ -92,12 +92,13 @@ pygls==0.13.0 \
     --hash=sha256:a018a007a3ca9079e060e5ebb88bfbbcc9157bac4f9ae45c5e24e569cbc93bd1 \
     --hash=sha256:d76e44768d75805da26dfbaec187c6251450af4b7b1cc0b7eb3587e6e27e32a4
     # via -r ./requirements.in
-pyrefact==58 \
-    --hash=sha256:3c3b9fd724fe01fee4ec05f405008fa326fd32f417486d72de84b87706fa8766 \
-    --hash=sha256:904fc1d805c2843b1b8c80705b39160a91555782fd5cfec4f91c09949d4f9af4
+pyrefact==61 \
+    --hash=sha256:2ce936ed115d5d0b80a28edd54cc4da9cc52a03a769aa45ba8e081b17079fad7 \
+    --hash=sha256:6e2d067a90f44dfdc4b697d87c0bc558201db7281714b9be65c0493501e26ba1
     # via -r ./requirements.in
-rmspace==6 \
-    --hash=sha256:8e7a284b3d5bae7760c7341c9da5427a5fd0ecc25e9cd63c0b1e1cea9ae23deb
+rmspace==7 \
+    --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
+    --hash=sha256:c19e1eadc648a1e5df2efef12bad5c1ec753f46e82c05262c38e221a1a21b0ab
     # via pyrefact
 six==1.16.0 \
     --hash=sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926 \
