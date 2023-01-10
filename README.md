@@ -2,7 +2,9 @@
 
 This extension adds [Pyrefact](https://pypi.org/project/pyrefact/) as a formatter in VSCode.
 
-Pyrefact is not primarily a formatter, though. It will identify a great deal of anti-patterns and easy ways to improve your code, and apply those completely automatically. It also removes commented and dead code, and trailing whitespace.
+Pyrefact automatically finds and solves a great deal of anti-patterns in python code code, and applies those automatically when formatting your code. It also removes commented and dead code, and trailing whitespace.
+
+After completing, pyrefact also formats your code with black and isort.
 
 ## Examples
 
