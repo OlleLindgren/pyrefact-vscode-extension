@@ -1,7 +1,7 @@
 {
     "name": "pyrefact",
     "displayName": "Pyrefact",
-    "description": "Formatting python files using `pyrefact`.",
+    "description": "Refactoring python code with Pyrefact",
     "version": "2023.0.10",
     "preview": true,
     "serverInfo": {
