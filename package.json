@@ -2,8 +2,8 @@
     "name": "pyrefact",
     "displayName": "Pyrefact",
     "description": "Refactoring python code with Pyrefact",
-    "version": "2023.0.11",
-    "preview": true,
+    "version": "2023.0.12",
+    "preview": false,
     "serverInfo": {
         "name": "Pyrefact",
         "module": "pyrefact"
