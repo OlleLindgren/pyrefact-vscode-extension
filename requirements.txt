@@ -92,9 +92,9 @@ pygls==0.13.0 \
     --hash=sha256:a018a007a3ca9079e060e5ebb88bfbbcc9157bac4f9ae45c5e24e569cbc93bd1 \
     --hash=sha256:d76e44768d75805da26dfbaec187c6251450af4b7b1cc0b7eb3587e6e27e32a4
     # via -r ./requirements.in
-pyrefact==63 \
-    --hash=sha256:6ecbb95d129e72de0c7435f6b266bc3726fbeeac044843a08e62f945662645bd \
-    --hash=sha256:ffc925e754e78396d1be5d43473ee8f81cb0924b83d7c15c14bbca3fa3e911c0
+pyrefact==64 \
+    --hash=sha256:0f6d440adeca70c5f051410e6f9b1b9b3e3cf41400258ea428e4004ff565facc \
+    --hash=sha256:48d1fc9fe142bae4c88cbe81c6c63b1780846dd08d23aa82609b886d65d50f7d
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
