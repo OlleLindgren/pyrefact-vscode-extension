@@ -92,9 +92,9 @@ pygls==0.13.0 \
     --hash=sha256:a018a007a3ca9079e060e5ebb88bfbbcc9157bac4f9ae45c5e24e569cbc93bd1 \
     --hash=sha256:d76e44768d75805da26dfbaec187c6251450af4b7b1cc0b7eb3587e6e27e32a4
     # via -r ./requirements.in
-pyrefact==64 \
-    --hash=sha256:0f6d440adeca70c5f051410e6f9b1b9b3e3cf41400258ea428e4004ff565facc \
-    --hash=sha256:48d1fc9fe142bae4c88cbe81c6c63b1780846dd08d23aa82609b886d65d50f7d
+pyrefact==65 \
+    --hash=sha256:7dc5c61d113ae7e948808ba7bbabbdb1e7eaf225e31c761b9b4c94bbf97d6810 \
+    --hash=sha256:b547049c9d2112321a06974acb9d13e0cc6751bbc661013d35ebed6ba0ac2bbc
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
@@ -104,10 +104,6 @@ six==1.16.0 \
     --hash=sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926 \
     --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
     # via astunparse
-sqlparse==0.4.3 \
-    --hash=sha256:0323c0ec29cd52bceabc1b4d9d579e311f3e4961b98d174201d5622a23b85e34 \
-    --hash=sha256:69ca804846bb114d2ec380e4360a8a340db83f0ccf3afceeb1404df028f57268
-    # via pyrefact
 sympy==1.11.1 \
     --hash=sha256:938f984ee2b1e8eae8a07b884c8b7a1146010040fccddc6539c54f401c8f6fcf \
     --hash=sha256:e32380dce63cb7c0108ed525570092fd45168bdae2faa17e528221ef72e88658

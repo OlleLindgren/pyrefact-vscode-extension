@@ -52,7 +52,7 @@ RUNNER = pathlib.Path(__file__).parent / "runner.py"
 MAX_WORKERS = 5
 LSP_SERVER = server.LanguageServer(
     name="pyrefact",
-    version="2023.0.14",
+    version="2023.0.15",
     max_workers=MAX_WORKERS,
 )
 
@@ -301,10 +301,6 @@ def _run_tool_on_document(
     if use_stdin is true then contents of the document is passed to the
     tool via stdin.
     """
-    if str(document.uri).startswith("vscode-notebook-cell"):
-        # Skip notebook cells
-        return None
-
     if utils.is_stdlib_file(document.path):
         # Skip standard library python files.
         return None
