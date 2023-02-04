@@ -34,9 +34,9 @@ mpmath==1.2.1 \
     --hash=sha256:604bc21bd22d2322a177c73bdb573994ef76e62edd595d17e00aff24b0667e5c \
     --hash=sha256:79ffb45cf9f4b101a807595bcb3e72e0396202e0b1d25d689134b48c4216a81a
     # via sympy
-mypy-extensions==0.4.3 \
-    --hash=sha256:090fedd75945a69ae91ce1303b5824f428daf5a028d2f6ab8a299250a846f15d \
-    --hash=sha256:2d82818f5bb3e369420cb3c4060a7970edba416647068eb4c5343488a6c604a8
+mypy-extensions==1.0.0 \
+    --hash=sha256:4392f6c0eb8a5668a69e23d168ffa70f0be9ccfd32b5cc2d26a34ae5b844552d \
+    --hash=sha256:75dbf8955dc00442a438fc4d0666508a9a97b6bd41aa2f0ffe9d2f2725af0782
     # via black
 packaging==23.0 \
     --hash=sha256:714ac14496c3e68c99c29b00845f7a2b85f3bb6f1078fd9f72fd20f0570002b2 \
@@ -92,9 +92,9 @@ pygls==0.13.0 \
     --hash=sha256:a018a007a3ca9079e060e5ebb88bfbbcc9157bac4f9ae45c5e24e569cbc93bd1 \
     --hash=sha256:d76e44768d75805da26dfbaec187c6251450af4b7b1cc0b7eb3587e6e27e32a4
     # via -r ./requirements.in
-pyrefact==67 \
-    --hash=sha256:3ffb0f3721a2215e3403646c0a9ab1d111259c8b4096ab209ccf6096b7b723fd \
-    --hash=sha256:6b3031560cffeb639e59644555b5a8243107840c27c6e009d7683e524b14830e
+pyrefact==68 \
+    --hash=sha256:84983f2d90632bc62f619e8bed76b6df9c2dd67d76c530d48aec8dbbb6ab8bea \
+    --hash=sha256:a19c5828ba06b6d45aff8e7fb66ddf76686f66c7022324c8eb8800f88206c97b
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \

@@ -52,7 +52,7 @@ RUNNER = pathlib.Path(__file__).parent / "runner.py"
 MAX_WORKERS = 5
 LSP_SERVER = server.LanguageServer(
     name="pyrefact",
-    version="2023.0.17",
+    version="2023.0.18",
     max_workers=MAX_WORKERS,
 )
 
