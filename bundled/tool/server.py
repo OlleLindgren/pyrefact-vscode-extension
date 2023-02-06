@@ -11,7 +11,7 @@ import pathlib
 import re
 import sys
 import traceback
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import jsonrpc
 import utils
