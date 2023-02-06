@@ -44,6 +44,7 @@ update_sys_path(
 # pylint: disable=wrong-import-position,import-error
 
 
+import pyrefact
 from pygls import lsp, protocol, server, uris, workspace
 
 WORKSPACE_SETTINGS = {}
@@ -133,16 +134,15 @@ def _count_newlines_at_start_end(source: str) -> Tuple[int, int]:
 def _formatting_helper(
     document: workspace.Document, selection_range: lsp.Range | None = None
 ) -> list[lsp.TextEdit] | None:
-    try:
-        result = _run_tool_on_document(document, use_stdin=True, selection_range=selection_range)
-    except InvalidSelection:
-        return None
+    if selection_range is not None:
+        try:
+            original_source = _get_text_subset(document.source, selection_range)
+        except InvalidSelection:
+            return None
+    else:
+        original_source = document.source
 
-    document_start = lsp.Position(line=0, character=0)
-    document_end = lsp.Position(line=len(document.lines), character=0)
-
-    new_source = result.stdout
-
+    new_source = pyrefact.format_code(original_source, safe=True)
     if not new_source:
         return None
 
@@ -153,25 +153,25 @@ def _formatting_helper(
     new_source = re.sub(r"(\s*\r?\n)+$\Z", "", new_source)
 
     if selection_range is None:
+        document_start = lsp.Position(line=0, character=0)
+        document_end = lsp.Position(line=len(document.lines), character=0)
         selection_range = lsp.Range(start=document_start, end=document_end)
-    else:
-        source_selection = _get_text_subset(document.source, selection_range)
-        expected_before, expected_after = _count_newlines_at_start_end(source_selection)
-        actual_before, actual_after = _count_newlines_at_start_end(new_source)
-        expected_newline_type = _get_line_endings(document.source) or "\n"
-        missing_before = min(MAX_SEQUENTIAL_NEWLINES, expected_before) - actual_before
-        missing_after = min(MAX_SEQUENTIAL_NEWLINES, expected_after) - actual_after
-        if missing_before > 0:
-            new_source = expected_newline_type * missing_before + new_source
-        if missing_after > 0:
-            new_source = new_source + expected_newline_type * missing_after
 
-    return [
-        lsp.TextEdit(
-            range=selection_range,
-            new_text=new_source,
-        )
-    ]
+        return [lsp.TextEdit(range=selection_range, new_text=new_source)]
+
+    expected_before, expected_after = _count_newlines_at_start_end(original_source)
+    actual_before, actual_after = _count_newlines_at_start_end(new_source)
+    expected_newline_type = _get_line_endings(document.source) or "\n"
+
+    missing_before = min(MAX_SEQUENTIAL_NEWLINES, expected_before) - actual_before
+    missing_after = min(MAX_SEQUENTIAL_NEWLINES, expected_after) - actual_after
+
+    if missing_before > 0:
+        new_source = expected_newline_type * missing_before + new_source
+    if missing_after > 0:
+        new_source = new_source + expected_newline_type * missing_after
+
+    return [lsp.TextEdit(range=selection_range, new_text=new_source)]
 
 
 def _get_line_endings(lines: list[str]) -> str:
@@ -242,22 +242,6 @@ def _update_workspace_settings(settings):
         }
 
 
-def _get_settings_by_document(document: workspace.Document | None):
-    if len(WORKSPACE_SETTINGS) == 1 or document is None or document.path is None:
-        return list(WORKSPACE_SETTINGS.values())[0]
-
-    document_workspace = pathlib.Path(document.path)
-    workspaces = {s["workspaceFS"] for s in WORKSPACE_SETTINGS.values()}
-
-    # COMMENT: about non workspace files
-    while document_workspace != document_workspace.parent:
-        if str(document_workspace) in workspaces:
-            return WORKSPACE_SETTINGS[str(document_workspace)]
-        document_workspace = document_workspace.parent
-
-    return list(WORKSPACE_SETTINGS.values())[0]
-
-
 @functools.lru_cache(maxsize=1)
 def _get_line_start_charnos(source: str) -> Sequence[int]:
     start = 0
@@ -285,198 +269,6 @@ def _get_text_subset(source: str, selection_range: lsp.Range) -> str:
         end_charno = len(source)
 
     return source[start_charno:end_charno]
-
-
-# *****************************************************
-# Internal execution APIs.
-# *****************************************************
-def _run_tool_on_document(
-    document: workspace.Document,
-    use_stdin: bool = False,
-    extra_args: Sequence[str] = [],
-    selection_range: lsp.Range | None = None,
-) -> utils.RunResult | None:
-    """Runs tool on the given document.
-
-    if use_stdin is true then contents of the document is passed to the
-    tool via stdin.
-    """
-    if utils.is_stdlib_file(document.path):
-        # Skip standard library python files.
-        return None
-
-    # deep copy here to prevent accidentally updating global settings.
-    settings = copy.deepcopy(_get_settings_by_document(document))
-
-    code_workspace = settings["workspaceFS"]
-    cwd = settings["workspaceFS"]
-
-    use_path = False
-    use_rpc = False
-    if settings["path"]:
-        # 'path' setting takes priority over everything.
-        use_path = True
-        argv = settings["path"]
-    elif settings["interpreter"] and not utils.is_current_interpreter(settings["interpreter"][0]):
-        # If there is a different interpreter set use JSON-RPC to the subprocess
-        # running under that interpreter.
-        argv = [TOOL_MODULE]
-        use_rpc = True
-    else:
-        # if the interpreter is same as the interpreter running this
-        # process then run as module.
-        argv = [TOOL_MODULE]
-
-    argv += TOOL_ARGS + settings["args"] + extra_args
-
-    if use_stdin:
-        argv += ["--from-stdin", "-s"]
-    else:
-        argv += ["-s", document.path]
-
-    source = document.source
-    if selection_range is not None:
-        source = _get_text_subset(source, selection_range)
-
-    if use_path:
-        # This mode is used when running executables.
-        log_to_output(" ".join(argv))
-        log_to_output(f"CWD Server: {cwd}")
-        result = utils.run_path(
-            argv=argv,
-            use_stdin=use_stdin,
-            cwd=cwd,
-            source=source.replace("\r\n", "\n"),
-        )
-        if result.stderr:
-            log_to_output(result.stderr)
-    elif use_rpc:
-        # This mode is used if the interpreter running this server is different from
-        # the interpreter used for running this server.
-        log_to_output(" ".join(settings["interpreter"] + ["-m"] + argv))
-        log_to_output(f"CWD Linter: {cwd}")
-
-        result = jsonrpc.run_over_json_rpc(
-            workspace=code_workspace,
-            interpreter=settings["interpreter"],
-            module=TOOL_MODULE,
-            argv=argv,
-            use_stdin=use_stdin,
-            cwd=cwd,
-            source=source,
-        )
-        if result.exception:
-            log_error(result.exception)
-            result = utils.RunResult(result.stdout, result.stderr)
-        elif result.stderr:
-            log_to_output(result.stderr)
-    else:
-        # In this mode the tool is run as a module in the same process as the language server.
-        log_to_output(" ".join([sys.executable, "-m"] + argv))
-        log_to_output(f"CWD Linter: {cwd}")
-        # This is needed to preserve sys.path, in cases where the tool modifies
-        # sys.path and that might not work for this scenario next time around.
-        with utils.substitute_attr(sys, "path", sys.path[:]):
-            try:
-                # TODO: `utils.run_module` is equivalent to running `python -m pyrefact`.
-                # If your tool supports a programmatic API then replace the function below
-                # with code for your tool. You can also use `utils.run_api` helper, which
-                # handles changing working directories, managing io streams, etc.
-                # Also update `_run_tool` function and `utils.run_module` in `runner.py`.
-                result = utils.run_module(
-                    module=TOOL_MODULE,
-                    argv=argv,
-                    use_stdin=use_stdin,
-                    cwd=cwd,
-                    source=source,
-                )
-            except Exception:
-                log_error(traceback.format_exc(chain=True))
-                raise
-        if result.stderr:
-            log_to_output(result.stderr)
-
-    log_to_output(f"{document.uri} :\r\n{result.stdout}")
-    return result
-
-
-def _run_tool(extra_args: Sequence[str]) -> utils.RunResult:
-    """Runs tool."""
-    # deep copy here to prevent accidentally updating global settings.
-    settings = copy.deepcopy(_get_settings_by_document(None))
-
-    code_workspace = settings["workspaceFS"]
-    cwd = settings["workspaceFS"]
-
-    use_path = False
-    use_rpc = False
-    if len(settings["path"]) > 0:
-        # 'path' setting takes priority over everything.
-        use_path = True
-        argv = settings["path"]
-    elif len(settings["interpreter"]) > 0 and not utils.is_current_interpreter(
-        settings["interpreter"][0]
-    ):
-        # If there is a different interpreter set use JSON-RPC to the subprocess
-        # running under that interpreter.
-        argv = [TOOL_MODULE]
-        use_rpc = True
-    else:
-        # if the interpreter is same as the interpreter running this
-        # process then run as module.
-        argv = [TOOL_MODULE]
-
-    argv += extra_args
-
-    argv += ["-s"]
-
-    if use_path:
-        # This mode is used when running executables.
-        log_to_output(" ".join(argv))
-        log_to_output(f"CWD Server: {cwd}")
-        result = utils.run_path(argv=argv, use_stdin=True, cwd=cwd)
-        if result.stderr:
-            log_to_output(result.stderr)
-    elif use_rpc:
-        # This mode is used if the interpreter running this server is different from
-        # the interpreter used for running this server.
-        log_to_output(" ".join(settings["interpreter"] + ["-m"] + argv))
-        log_to_output(f"CWD Linter: {cwd}")
-        result = jsonrpc.run_over_json_rpc(
-            workspace=code_workspace,
-            interpreter=settings["interpreter"],
-            module=TOOL_MODULE,
-            argv=argv,
-            use_stdin=True,
-            cwd=cwd,
-        )
-        if result.exception:
-            log_error(result.exception)
-            result = utils.RunResult(result.stdout, result.stderr)
-        elif result.stderr:
-            log_to_output(result.stderr)
-    else:
-        # In this mode the tool is run as a module in the same process as the language server.
-        log_to_output(" ".join([sys.executable, "-m"] + argv))
-        log_to_output(f"CWD Linter: {cwd}")
-        # This is needed to preserve sys.path, in cases where the tool modifies
-        # sys.path and that might not work for this scenario next time around.
-        with utils.substitute_attr(sys, "path", sys.path[:]):
-            try:
-                # TODO: `utils.run_module` is equivalent to running `python -m pyrefact`.
-                # If your tool supports a programmatic API then replace the function below
-                # with code for your tool. You can also use `utils.run_api` helper, which
-                # handles changing working directories, managing io streams, etc.
-                # Also update `_run_tool_on_document` function and `utils.run_module` in `runner.py`.
-                result = utils.run_module(module=TOOL_MODULE, argv=argv, use_stdin=True, cwd=cwd)
-            except Exception:
-                log_error(traceback.format_exc(chain=True))
-                raise
-        if result.stderr:
-            log_to_output(result.stderr)
-
-    log_to_output(f"\r\n{result.stdout}\r\n")
-    return result
 
 
 # *****************************************************
