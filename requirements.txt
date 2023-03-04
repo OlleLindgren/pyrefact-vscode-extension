@@ -57,9 +57,9 @@ isort==5.12.0 \
     --hash=sha256:8bef7dde241278824a6d83f44a544709b065191b95b6e50894bdc722fcba0504 \
     --hash=sha256:f84c2818376e66cf843d497486ea8fed8700b340f308f076c6fb1229dff318b6
     # via pyrefact
-lsprotocol==2023.0.0a0 \
-    --hash=sha256:3cb82ea9fd11a4df5eaebb58cc6800a4b2c03eada601ad6056d0b65601c66374 \
-    --hash=sha256:a6f153209d525b790bfe24d1de70f7c1ab989651074bb6c2d0aa4b9c450d131c
+lsprotocol==2023.0.0a1 \
+    --hash=sha256:133c339a7cccb299a5b357f9b8ef6aebe27616e0daf4ba54e63476afe0e12e47 \
+    --hash=sha256:32edfd4856abba1349bf5a070567445b3d7286951afba3644b472629796f82d0
     # via pygls
 mpmath==1.2.1 \
     --hash=sha256:604bc21bd22d2322a177c73bdb573994ef76e62edd595d17e00aff24b0667e5c \
@@ -87,9 +87,9 @@ pygls==1.0.1 \
     --hash=sha256:adacc96da77598c70f46acfdfd1481d3da90cd54f639f7eee52eb6e4dbd57b55 \
     --hash=sha256:f3ee98ddbb4690eb5c755bc32ba7e129607f14cbd313575f33d0cea443b78cb2
     # via -r ./requirements.in
-pyrefact==71 \
-    --hash=sha256:2e246043a1fbe71005834fbe3961b3ca1fb802c7a53376f62df6c504b3417e15 \
-    --hash=sha256:e5616b77fa250cf81010f9c7613e4c7a4d044c1dbc3192b5e898acb04a49778c
+pyrefact==73 \
+    --hash=sha256:d7fcec12414ad80a77c1a7acfa3d56089bcce3d9391d7e0c79b81e8932294c28 \
+    --hash=sha256:fa9c80dc12179568f5689214c2440751fd9cde36b6406beed964a684837e2b66
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
