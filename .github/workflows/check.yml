@@ -22,4 +22,4 @@ jobs:
         pip install -r ./src/test/python_tests/requirements.txt
     - name: Running unit tests
       run: |
-        pytest ./src/test/python_tests/test_server.py
+        nox --session tests
