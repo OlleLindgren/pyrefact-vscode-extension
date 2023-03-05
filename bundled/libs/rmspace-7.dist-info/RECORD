@@ -1,0 +1,13 @@
+rmspace-7.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+rmspace-7.dist-info/LICENSE,sha256=VtYxu4K4xe--JOpiccEDatS7M_tOZgTjOIAUUgGrTaM,1069
+rmspace-7.dist-info/METADATA,sha256=o24LLF3uSgYN7BHFzUDGusswnUqEllmEPDnvJvfvRCA,1980
+rmspace-7.dist-info/RECORD,,
+rmspace-7.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+rmspace-7.dist-info/WHEEL,sha256=2wepM1nk4DS4eFpYrW1TTqPcoGNfHhhO_i5m4cOimbo,92
+rmspace-7.dist-info/top_level.txt,sha256=fYU83U9SB71_WFbpuSFcZZGr04excAFBSs9qWRKDL7c,8
+rmspace/__init__.py,sha256=u2lwBCqNnxOaDNqZblV2YPMh7Aegs8S5FOJVPbs-4Rk,120
+rmspace/__main__.py,sha256=37kC17Mne4Pwml51QMgw26P6POGkxQmq47H2zDYcSrA,145
+rmspace/__pycache__/__init__.cpython-38.pyc,,
+rmspace/__pycache__/__main__.cpython-38.pyc,,
+rmspace/__pycache__/main.cpython-38.pyc,,
+rmspace/main.py,sha256=I2QnBCxfO9XgjDD3zWKz57ikgQ_WYcW1T5NP0XLYU4s,3527
