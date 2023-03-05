@@ -3,8 +3,50 @@ name: Tests
 on: [push, pull_request]
 
 jobs:
-  check:
+  check-ubuntu:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        pip install nox
+        nox --session build_package
+        pip install -r requirements.txt
+        pip install -r ./src/test/python_tests/requirements.txt
+    - name: Running unit tests
+      run: |
+        nox --session tests
+
+  check-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        pip install nox
+        nox --session build_package
+        pip install -r requirements.txt
+        pip install -r ./src/test/python_tests/requirements.txt
+    - name: Running unit tests
+      run: |
+        nox --session tests
+
+  check-windows:
+    runs-on: windows-latest
     strategy:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
