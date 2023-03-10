@@ -8,5 +8,4 @@ class Foo:
 
         if 2 in {1, 2, 3}:
 
-
             print(3)
