@@ -212,7 +212,7 @@ def _fix_variable_names(
 ) -> str:
     replacements = []
     ast_tree = parsing.parse(source)
-    blacklisted_names = parsing.get_imported_names(ast_tree) | constants.BUILTIN_FUNCTIONS
+    blacklisted_names = parsing.get_imported_names(ast_tree) | constants.BUILTIN_FUNCTIONS | constants.PYTHON_KEYWORDS
     for node, substitutes in renamings.items():
         if len(substitutes) != 1:
             continue
@@ -378,7 +378,7 @@ def _construct_import_statement(
     if isinstance(node, ast.Import):
         return f"import {names}"
 
-    return f"from {node.module} import {names}"
+    return f"from {'.' * node.level}{node.module or ''} import {names}"
 
 
 def _remove_unused_imports(
@@ -448,8 +448,14 @@ def fix_tabs(source: str) -> str:
 
 
 def fix_too_many_blank_lines(source: str) -> str:
-    source = re.sub(r"\n{4,}", "\n" * 3, source)
-    source = re.sub(r"\n{2,}\Z", "\n", source)
+    # At module level, remove all above 2 blank lines
+    source = re.sub(r"(\n\s*){3,}\n", "\n" * 3, source)
+
+    # At EOF, remove all newlines and whitespace above 1
+    source = re.sub(r"(\n\s*){2,}\Z", "\n", source)
+
+    # At non-module (any indented) level, remove all newlines above 1, preserve indent
+    source = re.sub(r"(\n\s*){2,}(\n\s+)(?=[^\n\s])", r"\n\g<2>", source)
 
     return source
 
@@ -628,6 +634,11 @@ def _iter_unused_names(
         preserve = preserve | required_names
 
     for body in filter(None, bodies):
+        names_defined_in_scope = {
+            target.id
+            for node in body
+            for assign in parsing.walk(node, (ast.Assign, ast.AnnAssign))
+            for target in parsing.assignment_targets(assign)}
         name_mentions = collections.defaultdict(set)
         for node in body:
             _, created_names, required_names = parsing.code_dependencies_outputs([node])
@@ -637,7 +648,8 @@ def _iter_unused_names(
         #     (directly or recursively) all references (set and get) of that name.
         name_node_sequences = {
             name: sorted(mentions, key=lambda node: node.lineno)
-            for name, mentions in name_mentions.items()}
+            for name, mentions in name_mentions.items()
+            if name in names_defined_in_scope}
         # (4) For every (name, node_sequence) in that grouping,
         for name, sequence in name_node_sequences.items():
             _, created_names, required_names = parsing.code_dependencies_outputs(sequence)
@@ -649,12 +661,9 @@ def _iter_unused_names(
                 _, node_created, _ = parsing.code_dependencies_outputs([node])
                 subsequent_created, _, subsequent_required = parsing.code_dependencies_outputs(
                     remainder)
-                if (
-                    # (8) If (name) is in its outputs, but (name) is not in the dependencies of
-                    # node_sequence[i:],
-                    name
-                    in node_created
-                ):
+                # (8) If (name) is in its outputs, but (name) is not in the dependencies of
+                # node_sequence[i:],
+                if name in node_created:
                     # (9) then (name) is being redundantly defined in node (i).
 
                     # If node (i) is an assign node, we can just un-assign it.
@@ -665,15 +674,16 @@ def _iter_unused_names(
                             # And (name) is either not in preserve (so nothing upstream cares about
                             # it), or (name) will surely be defined by a subsequent node
                             name not in preserve
+                            # TODO this seems impossible, figure out what is intended
                             or name in subsequent_created
                         )):
                         for creation_node in parsing.filter_nodes(
                             parsing.assignment_targets(node), ast.Name(id=name, ctx=ast.Store)):
                             yield creation_node
                     else:
-                        # If node (i) is something more complicated (like a loop or something), it may be that
-                        # (name) is defined and then used in node (i). But definitions of (name) that (node)
-                        # considers unused are still surely unused.
+                        # If node (i) is something more complicated (like a loop or something), it
+                        # may be that (name) is defined and then used in node (i). But definitions
+                        # of (name) that (node) considers unused are still surely unused.
                         yield from parsing.filter_nodes(
                             _iter_unused_names(node, preserve=preserve | subsequent_required),
                             ast.Name(id=name),)
@@ -983,6 +993,10 @@ def move_imports_to_toplevel(source: str) -> str:
                 continue
             safe_position_lineno = min(module_import_linenos)
 
+        source_lines = source.splitlines()
+        while safe_position_lineno > 1 and re.findall(r"^\s+", source_lines[safe_position_lineno]):
+            safe_position_lineno -= 1
+
         new_node = ast.ImportFrom(
             module=node.module,
             names=node.names,
@@ -990,6 +1004,9 @@ def move_imports_to_toplevel(source: str) -> str:
             lineno=safe_position_lineno,
         )
         additions.append(new_node)
+
+    # Remove duplicates
+    additions = {parsing.unparse(x): x for x in additions}.values()
 
     if removals or additions:
         logger.debug("Moving imports to toplevel")

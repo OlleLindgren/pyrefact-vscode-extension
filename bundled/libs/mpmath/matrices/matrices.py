@@ -206,7 +206,7 @@ class _matrix(object):
 
     ..
         COMMENT: TODO: the above "doctest:+SKIP" may be removed as soon as we
-        have dropped support for Python 3.4 and below.
+        have dropped support for Python 3.5 and below.
 
     You can raise powers of square matrices::
 
@@ -574,13 +574,17 @@ class _matrix(object):
 
     def __mul__(self, other):
         if isinstance(other, self.ctx.matrix):
-            # dot multiplication  TODO: use Strassen's method?
+            # dot multiplication
             if self.__cols != other.__rows:
                 raise ValueError('dimensions not compatible for multiplication')
             new = self.ctx.matrix(self.__rows, other.__cols)
+            self_zero = self.ctx.zero
+            self_get = self.__data.get
+            other_zero = other.ctx.zero
+            other_get = other.__data.get
             for i in xrange(self.__rows):
                 for j in xrange(other.__cols):
-                    new[i, j] = self.ctx.fdot((self[i,k], other[k,j])
+                    new[i, j] = self.ctx.fdot((self_get((i,k), self_zero), other_get((k,j), other_zero))
                                      for k in xrange(other.__rows))
             return new
         else:
