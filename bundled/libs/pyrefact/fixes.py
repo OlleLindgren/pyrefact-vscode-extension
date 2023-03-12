@@ -208,11 +208,15 @@ def _get_func_name_start_end(
 def _fix_variable_names(
     source: str,
     renamings: Mapping[ast.AST, str],
-    preserve: Collection[str] = frozenset(),
-) -> str:
+    preserve: Collection[str] = frozenset(),) -> str:
+
     replacements = []
     ast_tree = parsing.parse(source)
-    blacklisted_names = parsing.get_imported_names(ast_tree) | constants.BUILTIN_FUNCTIONS | constants.PYTHON_KEYWORDS
+    blacklisted_names = (
+        parsing.get_imported_names(ast_tree)
+        | constants.BUILTIN_FUNCTIONS
+        | constants.PYTHON_KEYWORDS
+    )
     for node, substitutes in renamings.items():
         if len(substitutes) != 1:
             continue
@@ -512,19 +516,17 @@ def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
         start, end = parsing.get_charnos(node, source, keep_first_indent=True)
 
         current_code = source[start:end]
-        elif_pattern = r"\A[\s\n]*(elif)"
-        if_pattern = r"\A[\s\n]*(if)"
+        elif_pattern = r"(\A[\s\n]*)(el)(if)"
+        if_pattern = r"(\A[\s\n]*)(if)"
         elif_matches = list(re.finditer(elif_pattern, current_code))
         if elif_matches:
-            re_match = elif_matches[0]
-            current_code = re.sub(
-                elif_pattern, re_match.group().replace("elif", "if"), current_code, 1
-            )
+            # Convert elif to if
+            current_code = re.sub(elif_pattern, r"\g<1>\g<3>", current_code, 1)
             new_code = formatting.format_with_black(
                 current_code, line_length=max(60, max_line_length)
             )
-            if_match = next(re.finditer(if_pattern, new_code))
-            new_code = re.sub(if_pattern, if_match.group().replace("if", "elif"), new_code, 1)
+            # Convert if to elif
+            new_code = re.sub(if_pattern, r"\g<1>el\g<2>", new_code, 1)
         else:
             new_code = formatting.format_with_black(
                 current_code, line_length=max(60, max_line_length)
@@ -1393,13 +1395,7 @@ def early_continue(source: str) -> str:
                     test=_negate_condition(stmt.test),
                 )
 
-    source = processing.alter_code(
-        source,
-        root,
-        additions=additions,
-        replacements=replacements,
-    )
-    return source
+    return processing.alter_code(source, root, additions=additions, replacements=replacements)
 
 
 @processing.fix
@@ -1711,9 +1707,7 @@ def inline_math_comprehensions(source: str) -> str:
         if assignment in replacements:
             del replacements[assignment]
 
-    source = processing.replace_nodes(source, replacements)
-
-    return source
+    return processing.replace_nodes(source, replacements)
 
 
 @processing.fix(restart_on_replace=True)
@@ -1736,7 +1730,6 @@ def simplify_transposes(source: str) -> str:
 @processing.fix(restart_on_replace=True)
 def remove_dead_ifs(source: str) -> str:
     root = parsing.parse(source)
-
 
     for node in parsing.walk(root, (ast.If, ast.While, ast.IfExp)):
         try:
@@ -1997,7 +1990,6 @@ def _preferred_comprehension_type(node: ast.AST) -> ast.AST | ast.SetComp | ast.
 
 @processing.fix
 def implicit_defaultdict(source: str) -> str:
-
 
     assign_template = ast.Assign(
         targets=[parsing.Wildcard("target", ast.Name)],
@@ -2967,6 +2959,7 @@ def deinterpolate_logging_args(source: str) -> str:
             )
 
 
+
 @processing.fix
 def _keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
     root = parsing.parse(source)
@@ -3185,3 +3178,32 @@ def unused_zip_args(source: str) -> str:
         elif len(new_elts) > 1:  # > 1 args used => remove unused ones, keep zip
             yield node.target, ast.Tuple(elts=new_elts)
             yield node.iter, ast.Call(func=func, args=iters, keywords=[])
+
+
+@processing.fix
+def simplify_assign_immediate_return(source: str) -> str:
+    root = parsing.parse(source)
+
+    for scope in parsing.walk(root, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # For every variable, how many times is it assigned in this scope?
+        name_assign_counts = collections.Counter(
+            target.id
+            for assignment in parsing.walk(scope, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+            for target in parsing.filter_nodes(
+                parsing.assignment_targets(assignment), ast.Name(id=str)))
+
+        names_assigned_only_once = tuple(
+            name for name, count in name_assign_counts.items() if count == 1)
+
+        assign_template = ast.Assign(
+            targets=[parsing.Wildcard("common_variable", ast.Name(id=names_assigned_only_once))])
+        return_template = ast.Return(
+            value=parsing.Wildcard("common_variable", ast.Name(id=names_assigned_only_once)))
+
+        for (asmt, variable), (ret, _) in parsing.walk_sequence(
+            scope, assign_template, return_template):
+            # If a variable name is assigned only once in this scope, and then immediately returned,
+            # it should be removed.
+
+            yield asmt, None
+            yield ret.value, asmt.value
