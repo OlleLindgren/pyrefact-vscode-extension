@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import copy
 import dataclasses
 import functools
 import itertools
@@ -73,23 +74,20 @@ def _all_fields_consistent(
     return True
 
 
+@functools.lru_cache(maxsize=10000)
+def _make_match_type(fields: Tuple[str, ...]) -> type:
+    return collections.namedtuple("Match", fields)
+
+
 def _merge_matches(root: ast.AST, matches: Iterable[Tuple[object]]) -> Tuple[object]:
-    matches_list = []
-    for m in matches:
-        if not m:
+    namedtuple_matches = []
+    for match in matches:
+        if not match:
             return ()
 
-        matches_list.append(m)
-
-    matches = matches_list
-
-    namedtuple_matches = []
-    tuple_matches = []
-    for match in matches:
-        if type(match) is tuple:
-            tuple_matches.append(match)
-        else:
+        if type(match) is not tuple:
             namedtuple_matches.append(match)
+
     if not namedtuple_matches:
         return (root,)
 
@@ -104,12 +102,12 @@ def _merge_matches(root: ast.AST, matches: Iterable[Tuple[object]]) -> Tuple[obj
     # Always store node in special "root" field. Other contents of this field are discarded.
 
     # Sort in alphabetical order, but always with "root" first.
-    fields = sorted(namedtuple_vars.keys(), key=lambda k: (k != "root", k))
-    namedtuple_type = collections.namedtuple("Match", fields)
+    fields = tuple(sorted(namedtuple_vars.keys(), key=lambda k: (k != "root", k)))
+    namedtuple_type = _make_match_type(fields)
     return namedtuple_type(*(namedtuple_vars[field] for field in fields))
 
 
-def match_template(node: ast.AST, template: ast.AST, ignore: Collection[str] = ()) -> Tuple:
+def match_template(node: ast.AST, template: ast.AST, ignore: Collection[str] = frozenset()) -> Tuple:
     """Match a node against a provided ast template.
 
     Args:
@@ -128,16 +126,17 @@ def match_template(node: ast.AST, template: ast.AST, ignore: Collection[str] = (
     if isinstance(template, type):
         return (node,) if isinstance(node, template) else ()
 
-    ignore = frozenset(ignore)
-
     # A tuple indicates an or condition; the node must comply with any of
     # the templates in the child.
     # They may all be types for example, which boils down to the traditional
     # isinstance logic.
     # If there are wildcards, the first match is chosen.
     if isinstance(template, tuple):
-        return next(
-            filter(None, (match_template(node, child, ignore=ignore) for child in template)), ())
+        for child in template:
+            if match := match_template(node, child, ignore=ignore):
+                return match
+        return ()
+
     # A set indicates a variable length list, where all elements must match
     # against at least one of the templates in it.
     # If there are wildcards, the first match is chosen.
@@ -167,7 +166,7 @@ def match_template(node: ast.AST, template: ast.AST, ignore: Collection[str] = (
         return (node,) if node is template else ()
 
     if isinstance(template, Wildcard):
-        namedtuple_type = collections.namedtuple("Match", (template.name,))
+        namedtuple_type = _make_match_type((template.name,))
         template_match = match_template(node, template.template, ignore=ignore)
         return namedtuple_type(template_match[0]) if len(template_match) == 1 else ()
 
@@ -176,17 +175,26 @@ def match_template(node: ast.AST, template: ast.AST, ignore: Collection[str] = (
     if not isinstance(node, ast.AST):
         return (node,) if node == template else ()
 
+    if not isinstance(node, type(template)):
+        return ()
+
     t_vars = vars(template)
     n_vars = vars(node)
 
-    if issubclass(type(node), type(template)) and t_vars.keys() - ignore <= n_vars.keys() - ignore:
-        matches = (
-            match_template(n_vars[key], t_vars[key], ignore=ignore)
-            for key in t_vars.keys() - ignore
-        )
-        return _merge_matches(node, matches)
+    if not isinstance(node, type(template)):
+        return ()
 
-    return ()
+    for k in t_vars:
+        if k in ignore:
+            continue
+        if k not in n_vars:
+            return ()
+
+    matches = (
+        match_template(n_vars[key], t_vars[key], ignore=ignore)
+        for key in t_vars.keys() - ignore
+    )
+    return _merge_matches(node, matches)
 
 
 @functools.lru_cache(maxsize=100)
@@ -1144,3 +1152,12 @@ def code_dependencies_outputs(
         created_names.update(node_created)
         required_names.update(node_needed)
     return created_names_original, maybe_created_names, required_names
+
+
+def with_added_indent(node: ast.AST, indent: int):
+    clone = copy.deepcopy(node)
+    for child in ast.walk(clone):
+        if isinstance(child, ast.AST) and hasattr(child, "col_offset"):
+            child.col_offset += indent
+
+    return clone
