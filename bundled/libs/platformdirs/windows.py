@@ -17,7 +17,9 @@ class Windows(PlatformDirsABC):
     `appauthor <platformdirs.api.PlatformDirsABC.appauthor>`,
     `version <platformdirs.api.PlatformDirsABC.version>`,
     `roaming <platformdirs.api.PlatformDirsABC.roaming>`,
-    `opinion <platformdirs.api.PlatformDirsABC.opinion>`."""
+    `opinion <platformdirs.api.PlatformDirsABC.opinion>`,
+    `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
+    """
 
     @property
     def user_data_dir(self) -> str:
@@ -41,7 +43,9 @@ class Windows(PlatformDirsABC):
                 params.append(opinion_value)
             if self.version:
                 params.append(self.version)
-        return os.path.join(path, *params)
+        path = os.path.join(path, *params)
+        self._optionally_create_directory(path)
+        return path
 
     @property
     def site_data_dir(self) -> str:
@@ -87,6 +91,7 @@ class Windows(PlatformDirsABC):
         path = self.user_data_dir
         if self.opinion:
             path = os.path.join(path, "Logs")
+            self._optionally_create_directory(path)
         return path
 
     @property
@@ -95,6 +100,27 @@ class Windows(PlatformDirsABC):
         :return: documents directory tied to the user e.g. ``%USERPROFILE%\\Documents``
         """
         return os.path.normpath(get_win_folder("CSIDL_PERSONAL"))
+
+    @property
+    def user_pictures_dir(self) -> str:
+        """
+        :return: pictures directory tied to the user e.g. ``%USERPROFILE%\\Pictures``
+        """
+        return os.path.normpath(get_win_folder("CSIDL_MYPICTURES"))
+
+    @property
+    def user_videos_dir(self) -> str:
+        """
+        :return: videos directory tied to the user e.g. ``%USERPROFILE%\\Videos``
+        """
+        return os.path.normpath(get_win_folder("CSIDL_MYVIDEO"))
+
+    @property
+    def user_music_dir(self) -> str:
+        """
+        :return: music directory tied to the user e.g. ``%USERPROFILE%\\Music``
+        """
+        return os.path.normpath(get_win_folder("CSIDL_MYMUSIC"))
 
     @property
     def user_runtime_dir(self) -> str:
@@ -108,8 +134,9 @@ class Windows(PlatformDirsABC):
 
 def get_win_folder_from_env_vars(csidl_name: str) -> str:
     """Get folder from environment variables."""
-    if csidl_name == "CSIDL_PERSONAL":  # does not have an environment name
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Documents")
+    result = get_win_folder_if_csidl_name_not_env_var(csidl_name)
+    if result is not None:
+        return result
 
     env_var_name = {
         "CSIDL_APPDATA": "APPDATA",
@@ -124,6 +151,22 @@ def get_win_folder_from_env_vars(csidl_name: str) -> str:
     return result
 
 
+def get_win_folder_if_csidl_name_not_env_var(csidl_name: str) -> str | None:
+    """Get folder for a CSIDL name that does not exist as an environment variable."""
+    if csidl_name == "CSIDL_PERSONAL":
+        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Documents")
+
+    if csidl_name == "CSIDL_MYPICTURES":
+        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Pictures")
+
+    if csidl_name == "CSIDL_MYVIDEO":
+        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Videos")
+
+    if csidl_name == "CSIDL_MYMUSIC":
+        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Music")
+    return None
+
+
 def get_win_folder_from_registry(csidl_name: str) -> str:
     """Get folder from the registry.
 
@@ -136,6 +179,9 @@ def get_win_folder_from_registry(csidl_name: str) -> str:
         "CSIDL_COMMON_APPDATA": "Common AppData",
         "CSIDL_LOCAL_APPDATA": "Local AppData",
         "CSIDL_PERSONAL": "Personal",
+        "CSIDL_MYPICTURES": "My Pictures",
+        "CSIDL_MYVIDEO": "My Video",
+        "CSIDL_MYMUSIC": "My Music",
     }.get(csidl_name)
     if shell_folder_name is None:
         raise ValueError(f"Unknown CSIDL name: {csidl_name}")
@@ -155,6 +201,9 @@ def get_win_folder_via_ctypes(csidl_name: str) -> str:
         "CSIDL_COMMON_APPDATA": 35,
         "CSIDL_LOCAL_APPDATA": 28,
         "CSIDL_PERSONAL": 5,
+        "CSIDL_MYPICTURES": 39,
+        "CSIDL_MYVIDEO": 14,
+        "CSIDL_MYMUSIC": 13,
     }.get(csidl_name)
     if csidl_const is None:
         raise ValueError(f"Unknown CSIDL name: {csidl_name}")

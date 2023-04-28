@@ -22,6 +22,7 @@ class PlatformDirsABC(ABC):
         roaming: bool = False,
         multipath: bool = False,
         opinion: bool = True,
+        ensure_exists: bool = False,
     ):
         """
         Create a new platform directory.
@@ -32,6 +33,7 @@ class PlatformDirsABC(ABC):
         :param roaming: See `roaming`.
         :param multipath: See `multipath`.
         :param opinion: See `opinion`.
+        :param ensure_exists: See `ensure_exists`.
         """
         self.appname = appname  #: The name of application.
         self.appauthor = appauthor
@@ -56,6 +58,11 @@ class PlatformDirsABC(ABC):
         returned. By default, the first item would only be returned.
         """
         self.opinion = opinion  #: A flag to indicating to use opinionated values.
+        self.ensure_exists = ensure_exists
+        """
+        Optionally create the directory (and any missing parents) upon access if it does not exist.
+        By default, no directories are created.
+        """
 
     def _append_app_name_and_version(self, *base: str) -> str:
         params = list(base[1:])
@@ -63,7 +70,13 @@ class PlatformDirsABC(ABC):
             params.append(self.appname)
             if self.version:
                 params.append(self.version)
-        return os.path.join(base[0], *params)
+        path = os.path.join(base[0], *params)
+        self._optionally_create_directory(path)
+        return path
+
+    def _optionally_create_directory(self, path: str) -> None:
+        if self.ensure_exists:
+            Path(path).mkdir(parents=True, exist_ok=True)
 
     @property
     @abstractmethod
@@ -109,6 +122,21 @@ class PlatformDirsABC(ABC):
     @abstractmethod
     def user_documents_dir(self) -> str:
         """:return: documents directory tied to the user"""
+
+    @property
+    @abstractmethod
+    def user_pictures_dir(self) -> str:
+        """:return: pictures directory tied to the user"""
+
+    @property
+    @abstractmethod
+    def user_videos_dir(self) -> str:
+        """:return: videos directory tied to the user"""
+
+    @property
+    @abstractmethod
+    def user_music_dir(self) -> str:
+        """:return: music directory tied to the user"""
 
     @property
     @abstractmethod
@@ -159,6 +187,21 @@ class PlatformDirsABC(ABC):
     def user_documents_path(self) -> Path:
         """:return: documents path tied to the user"""
         return Path(self.user_documents_dir)
+
+    @property
+    def user_pictures_path(self) -> Path:
+        """:return: pictures path tied to the user"""
+        return Path(self.user_pictures_dir)
+
+    @property
+    def user_videos_path(self) -> Path:
+        """:return: videos path tied to the user"""
+        return Path(self.user_videos_dir)
+
+    @property
+    def user_music_path(self) -> Path:
+        """:return: music path tied to the user"""
+        return Path(self.user_music_dir)
 
     @property
     def user_runtime_path(self) -> Path:

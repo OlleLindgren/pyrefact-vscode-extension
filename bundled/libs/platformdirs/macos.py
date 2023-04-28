@@ -9,8 +9,9 @@ class MacOS(PlatformDirsABC):
     """
     Platform directories for the macOS operating system. Follows the guidance from `Apple documentation
     <https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html>`_.
-    Makes use of the `appname <platformdirs.api.PlatformDirsABC.appname>` and
-    `version <platformdirs.api.PlatformDirsABC.version>`.
+    Makes use of the `appname <platformdirs.api.PlatformDirsABC.appname>`,
+    `version <platformdirs.api.PlatformDirsABC.version>`,
+    `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
     """
 
     @property
@@ -57,6 +58,21 @@ class MacOS(PlatformDirsABC):
     def user_documents_dir(self) -> str:
         """:return: documents directory tied to the user, e.g. ``~/Documents``"""
         return os.path.expanduser("~/Documents")
+
+    @property
+    def user_pictures_dir(self) -> str:
+        """:return: pictures directory tied to the user, e.g. ``~/Pictures``"""
+        return os.path.expanduser("~/Pictures")
+
+    @property
+    def user_videos_dir(self) -> str:
+        """:return: videos directory tied to the user, e.g. ``~/Movies``"""
+        return os.path.expanduser("~/Movies")
+
+    @property
+    def user_music_dir(self) -> str:
+        """:return: music directory tied to the user, e.g. ``~/Music``"""
+        return os.path.expanduser("~/Music")
 
     @property
     def user_runtime_dir(self) -> str:

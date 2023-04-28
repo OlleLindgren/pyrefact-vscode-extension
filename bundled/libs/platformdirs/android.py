@@ -12,8 +12,9 @@ from .api import PlatformDirsABC
 class Android(PlatformDirsABC):
     """
     Follows the guidance `from here <https://android.stackexchange.com/a/216132>`_. Makes use of the
-    `appname <platformdirs.api.PlatformDirsABC.appname>` and
-    `version <platformdirs.api.PlatformDirsABC.version>`.
+    `appname <platformdirs.api.PlatformDirsABC.appname>`,
+    `version <platformdirs.api.PlatformDirsABC.version>`,
+    `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
     """
 
     @property
@@ -72,6 +73,27 @@ class Android(PlatformDirsABC):
         return _android_documents_folder()
 
     @property
+    def user_pictures_dir(self) -> str:
+        """
+        :return: pictures directory tied to the user e.g. ``/storage/emulated/0/Pictures``
+        """
+        return _android_pictures_folder()
+
+    @property
+    def user_videos_dir(self) -> str:
+        """
+        :return: videos directory tied to the user e.g. ``/storage/emulated/0/DCIM/Camera``
+        """
+        return _android_videos_folder()
+
+    @property
+    def user_music_dir(self) -> str:
+        """
+        :return: music directory tied to the user e.g. ``/storage/emulated/0/Music``
+        """
+        return _android_music_folder()
+
+    @property
     def user_runtime_dir(self) -> str:
         """
         :return: runtime directory tied to the user, same as `user_cache_dir` if not opinionated else ``tmp`` in it,
@@ -118,6 +140,54 @@ def _android_documents_folder() -> str:
         documents_dir = "/storage/emulated/0/Documents"
 
     return documents_dir
+
+
+@lru_cache(maxsize=1)
+def _android_pictures_folder() -> str:
+    """:return: pictures folder for the Android OS"""
+    # Get directories with pyjnius
+    try:
+        from jnius import autoclass
+
+        Context = autoclass("android.content.Context")  # noqa: N806
+        Environment = autoclass("android.os.Environment")  # noqa: N806
+        pictures_dir: str = Context.getExternalFilesDir(Environment.DIRECTORY_PICTURES).getAbsolutePath()
+    except Exception:
+        pictures_dir = "/storage/emulated/0/Pictures"
+
+    return pictures_dir
+
+
+@lru_cache(maxsize=1)
+def _android_videos_folder() -> str:
+    """:return: videos folder for the Android OS"""
+    # Get directories with pyjnius
+    try:
+        from jnius import autoclass
+
+        Context = autoclass("android.content.Context")  # noqa: N806
+        Environment = autoclass("android.os.Environment")  # noqa: N806
+        videos_dir: str = Context.getExternalFilesDir(Environment.DIRECTORY_DCIM).getAbsolutePath()
+    except Exception:
+        videos_dir = "/storage/emulated/0/DCIM/Camera"
+
+    return videos_dir
+
+
+@lru_cache(maxsize=1)
+def _android_music_folder() -> str:
+    """:return: music folder for the Android OS"""
+    # Get directories with pyjnius
+    try:
+        from jnius import autoclass
+
+        Context = autoclass("android.content.Context")  # noqa: N806
+        Environment = autoclass("android.os.Environment")  # noqa: N806
+        music_dir: str = Context.getExternalFilesDir(Environment.DIRECTORY_MUSIC).getAbsolutePath()
+    except Exception:
+        music_dir = "/storage/emulated/0/Music"
+
+    return music_dir
 
 
 __all__ = [
