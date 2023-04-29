@@ -779,6 +779,17 @@ def literal_value(node: ast.AST) -> bool:
     if has_side_effect(node):
         raise ValueError("Cannot find a deterministic value for a node with a side effect")
 
+    if match_template(node, ast.BinOp(op=tuple(constants.COMPARISON_OPERATORS), left=object, right=object)):
+        left = literal_value(node.left)
+        right = literal_value(node.right)
+        return constants.COMPARISON_OPERATORS[type(node.op)](left, right)
+
+    if match_template(node, ast.Compare(left=object, ops={object}, comparators={object})):
+        return all(
+            constants.COMPARISON_OPERATORS[type(op)](literal_value(left), literal_value(comparator))
+            for left, op, comparator in zip([node.left] + node.comparators, node.ops, node.comparators)
+        )
+
     return ast.literal_eval(node)
 
 
@@ -1094,6 +1105,8 @@ def code_dependencies_outputs(
             required_names.update(
                 func.name
                 for func in walk(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+            if isinstance(node, ast.Try):
+                maybe_created_names.update(name.id for name in walk(node, ast.Name(ctx=ast.Store)))
             continue
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             created_names.update(
