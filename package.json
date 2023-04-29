@@ -85,7 +85,7 @@
                     "type": "array"
                 },
                 "pyrefact.importStrategy": {
-                    "default": "fromEnvironment",
+                    "default": "useBundled",
                     "description": "Defines where `pyrefact` is imported from. This setting may be ignored if `pyrefact.path` is set.",
                     "enum": [
                         "useBundled",
