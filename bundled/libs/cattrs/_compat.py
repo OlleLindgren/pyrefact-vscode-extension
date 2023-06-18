@@ -1,12 +1,13 @@
 import builtins
 import sys
+from collections import deque
 from collections.abc import MutableSet as AbcMutableSet
 from collections.abc import Set as AbcSet
 from dataclasses import MISSING
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
 from typing import AbstractSet as TypingAbstractSet
-from typing import Any, Dict, FrozenSet, List
+from typing import Any, Deque, Dict, FrozenSet, List
 from typing import Mapping as TypingMapping
 from typing import MutableMapping as TypingMutableMapping
 from typing import MutableSequence as TypingMutableSequence
@@ -20,11 +21,33 @@ from attr import NOTHING, Attribute, Factory
 from attr import fields as attrs_fields
 from attr import resolve_types
 
+try:
+    from typing_extensions import TypedDict as ExtensionsTypedDict
+except ImportError:
+    ExtensionsTypedDict = None
+
+try:
+    from typing_extensions import _TypedDictMeta as ExtensionsTypedDictMeta
+except ImportError:
+    ExtensionsTypedDictMeta = None
+
+__all__ = [
+    "ExtensionsTypedDict",
+    "is_py37",
+    "is_py38",
+    "is_py39_plus",
+    "is_py310_plus",
+    "is_py311_plus",
+    "is_typeddict",
+    "TypedDict",
+]
+
 version_info = sys.version_info[0:3]
 is_py37 = version_info[:2] == (3, 7)
 is_py38 = version_info[:2] == (3, 8)
 is_py39_plus = version_info[:2] >= (3, 9)
 is_py310_plus = version_info[:2] >= (3, 10)
+is_py311_plus = version_info[:2] >= (3, 11)
 
 if is_py37:
 
@@ -34,10 +57,10 @@ if is_py37:
     def get_origin(cl):
         return getattr(cl, "__origin__", None)
 
-    from typing_extensions import Protocol
+    from typing_extensions import Final, Protocol
 
 else:
-    from typing import Protocol, get_args, get_origin  # NOQA
+    from typing import Final, Protocol, get_args, get_origin
 
 if "ExceptionGroup" not in dir(builtins):
     from exceptiongroup import ExceptionGroup
@@ -64,7 +87,7 @@ def fields(type):
             raise Exception("Not an attrs or dataclass class.")
 
 
-def adapted_fields(cl) -> List[Attribute]:
+def _adapted_fields(cl) -> List[Attribute]:
     """Return the attrs format of `fields()` for attrs and dataclasses."""
     if is_dataclass(cl):
         attrs = dataclass_fields(cl)
@@ -103,6 +126,14 @@ def adapted_fields(cl) -> List[Attribute]:
         return attribs
 
 
+def is_subclass(obj: type, bases) -> bool:
+    """A safe version of issubclass (won't raise)."""
+    try:
+        return issubclass(obj, bases)
+    except TypeError:
+        return False
+
+
 def is_hetero_tuple(type: Any) -> bool:
     origin = getattr(type, "__origin__", None)
     return origin is tuple and ... not in type.__args__
@@ -110,6 +141,20 @@ def is_hetero_tuple(type: Any) -> bool:
 
 def is_protocol(type: Any) -> bool:
     return issubclass(type, Protocol) and getattr(type, "_is_protocol", False)
+
+
+def is_bare_final(type) -> bool:
+    return type is Final
+
+
+def get_final_base(type) -> Optional[type]:
+    """Return the base of the Final annotation, if it is Final."""
+    if type is Final:
+        return Any
+    elif type.__class__ is _GenericAlias and type.__origin__ is Final:
+        return type.__args__[0]
+    else:
+        return None
 
 
 OriginAbstractSet = AbcSet
@@ -129,9 +174,17 @@ if is_py37 or is_py38:
 
     from collections import Counter as ColCounter
     from typing import Counter, Union, _GenericAlias
+    from typing_extensions import Annotated, NotRequired, Required
+    from typing_extensions import get_origin as te_get_origin
 
-    def is_annotated(_):
-        return False
+    if is_py38:
+        from typing import TypedDict, _TypedDictMeta
+    else:
+        _TypedDictMeta = None
+        TypedDict = ExtensionsTypedDict
+
+    def is_annotated(type) -> bool:
+        return te_get_origin(type) is Annotated
 
     def is_tuple(type):
         return type in (Tuple, tuple) or (
@@ -161,6 +214,13 @@ if is_py37 or is_py38:
                 and issubclass(type.__origin__, TypingSequence)
             )
             or (type.__origin__ in (Tuple, tuple) and type.__args__[1] is ...)
+        )
+
+    def is_deque(type: Any) -> bool:
+        return (
+            type in (deque, Deque)
+            or (type.__class__ is _GenericAlias and issubclass(type.__origin__, deque))
+            or type.__origin__ is deque
         )
 
     def is_mutable_set(type):
@@ -216,6 +276,25 @@ if is_py37 or is_py38:
         """Replace a generic type's arguments."""
         return type.copy_with(args)
 
+    def is_typeddict(cls) -> bool:
+        return (
+            cls.__class__ is _TypedDictMeta
+            or (is_generic(cls) and (cls.__origin__.__class__ is _TypedDictMeta))
+            or (
+                ExtensionsTypedDictMeta is not None
+                and cls.__class__ is ExtensionsTypedDictMeta
+                or (
+                    is_generic(cls)
+                    and (cls.__origin__.__class__ is ExtensionsTypedDictMeta)
+                )
+            )
+        )
+
+    def get_notrequired_base(type) -> "Union[Any, Literal[NOTHING]]":
+        if get_origin(type) in (NotRequired, Required):
+            return get_args(type)[0]
+        return NOTHING
+
 else:
     # 3.9+
     from collections import Counter
@@ -229,10 +308,13 @@ else:
     from typing import Annotated
     from typing import Counter as TypingCounter
     from typing import (
+        Generic,
+        TypedDict,
         Union,
         _AnnotatedAlias,
         _GenericAlias,
         _SpecialGenericAlias,
+        _TypedDictMeta,
         _UnionGenericAlias,
     )
 
@@ -284,7 +366,13 @@ else:
                 return typ.__supertype__
             return None
 
+        if is_py311_plus:
+            from typing import NotRequired, Required
+        else:
+            from typing_extensions import NotRequired, Required
+
     else:
+        from typing_extensions import NotRequired, Required
 
         def is_union_type(obj):
             return (
@@ -303,6 +391,25 @@ else:
                 return supertype
             return None
 
+    def is_typeddict(cls) -> bool:
+        return (
+            cls.__class__ is _TypedDictMeta
+            or (is_generic(cls) and (cls.__origin__.__class__ is _TypedDictMeta))
+            or (
+                ExtensionsTypedDictMeta is not None
+                and cls.__class__ is ExtensionsTypedDictMeta
+                or (
+                    is_generic(cls)
+                    and (cls.__origin__.__class__ is ExtensionsTypedDictMeta)
+                )
+            )
+        )
+
+    def get_notrequired_base(type) -> "Union[Any, Literal[NOTHING]]":
+        if get_origin(type) in (NotRequired, Required):
+            return get_args(type)[0]
+        return NOTHING
+
     def is_sequence(type: Any) -> bool:
         origin = getattr(type, "__origin__", None)
         return (
@@ -313,8 +420,10 @@ else:
                 TypingSequence,
                 TypingMutableSequence,
                 AbcMutableSequence,
-                Tuple,
                 tuple,
+                Tuple,
+                deque,
+                Deque,
             )
             or (
                 type.__class__ is _GenericAlias
@@ -325,8 +434,15 @@ else:
                     and type.__args__[1] is ...
                 )
             )
-            or (origin in (list, AbcMutableSequence, AbcSequence))
+            or (origin in (list, deque, AbcMutableSequence, AbcSequence))
             or (origin is tuple and type.__args__[1] is ...)
+        )
+
+    def is_deque(type):
+        return (
+            type in (deque, Deque)
+            or (type.__class__ is _GenericAlias and issubclass(type.__origin__, deque))
+            or (getattr(type, "__origin__", None) is deque)
         )
 
     def is_mutable_set(type):
@@ -356,7 +472,7 @@ else:
 
     def is_mapping(type):
         return (
-            type in (TypingMapping, Dict, TypingMutableMapping, dict, AbcMutableMapping)
+            type in (dict, Dict, TypingMapping, TypingMutableMapping, AbcMutableMapping)
             or (
                 type.__class__ is _GenericAlias
                 and issubclass(type.__origin__, TypingMapping)
@@ -374,8 +490,12 @@ else:
             or getattr(type, "__origin__", None) is Counter
         )
 
-    def is_generic(obj):
-        return isinstance(obj, _GenericAlias) or isinstance(obj, GenericAlias)
+    def is_generic(obj) -> bool:
+        return (
+            isinstance(obj, _GenericAlias)
+            or isinstance(obj, GenericAlias)
+            or is_subclass(obj, Generic)
+        )
 
     def copy_with(type, args):
         """Replace a generic type's arguments."""

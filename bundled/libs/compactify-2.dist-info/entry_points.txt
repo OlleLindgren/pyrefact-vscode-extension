@@ -1,0 +1,2 @@
+[console_scripts]
+compactify = compactify.__main__:main
