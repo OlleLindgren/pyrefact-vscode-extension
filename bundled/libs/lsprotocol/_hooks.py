@@ -20,14 +20,14 @@ def _resolve_forward_references() -> None:
     global _resolved_forward_references
     if not _resolved_forward_references:
 
-        def _filter(p: Tuple[str, Union[type, object]]) -> bool:
+        def _filter(p: Tuple[str, object]) -> bool:
             return isinstance(p[1], type) and attrs.has(p[1])
 
         # Creating a concrete list here because `resolve_types` mutates the provided map.
         items = list(filter(_filter, lsp_types.ALL_TYPES_MAP.items()))
         for _, value in items:
             if isinstance(value, type):
-                attrs.resolve_types(value, lsp_types.ALL_TYPES_MAP, {})
+                attrs.resolve_types(value, lsp_types.ALL_TYPES_MAP, {})  # type: ignore
         _resolved_forward_references = True
 
 
@@ -382,6 +382,16 @@ def _register_capabilities_hooks(converter: cattrs.Converter) -> cattrs.Converte
             return converter.structure(object_, lsp_types.InlayHintRegistrationOptions)
         else:
             return converter.structure(object_, lsp_types.InlayHintOptions)
+
+    def _inlay_hint_label_part_hook(
+        object_: Any, _: type
+    ) -> Union[str, List[lsp_types.InlayHintLabelPart]]:
+        if isinstance(object_, str):
+            return object_
+
+        return [
+            converter.structure(item, lsp_types.InlayHintLabelPart) for item in object_
+        ]
 
     def _diagnostic_provider_hook(
         object_: Any, _: type
@@ -774,6 +784,10 @@ def _register_capabilities_hooks(converter: cattrs.Converter) -> cattrs.Converte
                 ]
             ],
             _inlay_hint_provider_hook,
+        ),
+        (
+            Union[str, List[lsp_types.InlayHintLabelPart]],
+            _inlay_hint_label_part_hook,
         ),
         (
             Optional[

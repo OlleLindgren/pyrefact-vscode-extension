@@ -8,8 +8,8 @@ import re
 from types import MappingProxyType
 from typing import Callable, Collection, Iterable, Literal, Mapping, NamedTuple, Sequence
 
-from pyrefact import logs as logger
-from pyrefact import parsing
+from pyrefact import logs as logger, parsing
+
 
 MSG_INFO_REPLACE = """{fix_function_name:<40}: Replacing code:
 {old_code}
@@ -211,6 +211,10 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         new_code = parsing.unparse(new)
     else:
         raise TypeError(f"Invalid replacement type: {type(new)}")
+
+    if isinstance(old, Range):
+        return source[: old.start] + new_code + source[old.end :]
+
     lines = new_code.splitlines(keepends=True)
     indent = getattr(old, "col_offset", getattr(new, "col_offset", 0))
     indents = {**{i: indent for i in range(len(lines))}, 0: len(code) - len(code.lstrip(" "))}
@@ -393,6 +397,16 @@ def _get_charnos(obj: _Rewrite, source: str):
 
 
 def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) -> Callable:
+    """Convert an iterator of (before, after) asts to a function that fixes source code.
+
+    Args:
+        maybe_func (Callable): Function to fix source code. If not provided, this is a decorator.
+        restart_on_replace (bool, optional): If True, restarts the rewrite loop on replacements.
+            This is needed when a replacement may alter the code in a way that makes it hard for
+            the rewriter to properly place the next rewrite. Defaults to False.
+        sort_order (bool, optional): If True, sorts the rewrites by line number and col_offset.
+    """
+
     def fix_decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(source, *args, **kwargs):

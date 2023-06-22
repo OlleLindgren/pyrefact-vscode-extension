@@ -1,0 +1,2 @@
+[console_scripts]
+pyrefact = pyrefact.__main__:main

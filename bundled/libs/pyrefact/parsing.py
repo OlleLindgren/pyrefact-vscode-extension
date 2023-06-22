@@ -7,11 +7,11 @@ import dataclasses
 import functools
 import itertools
 import re
+import textwrap
 import traceback
 from typing import Collection, Iterable, Mapping, Sequence, Tuple
 
-from pyrefact import constants, formatting
-from pyrefact import logs as logger
+from pyrefact import constants, formatting, logs as logger
 
 
 def unparse(node: ast.AST) -> str:
@@ -43,8 +43,7 @@ def unparse(node: ast.AST) -> str:
     except (SyntaxError, ValueError):
         source = formatting.format_with_black(source, line_length=line_length)
     source = formatting.collapse_trailing_parentheses(source)
-    indent = formatting.get_indent(source)
-    source = formatting.deindent_code(source, indent).lstrip()
+    source = textwrap.dedent(source).lstrip()
 
     return source
 
@@ -121,6 +120,29 @@ def match_template(
         Tuple:
             If node matches, a namedtuple with node as the first element, and
             any wildcards as other fields. Otherwise, an empty tuple.
+
+    Essentially, asts match themselves. However, there are a few special rules:
+    * Types match instances of that type, and nothing else.
+    * Tuples denote OR syntax, where the node must match any of the templates in the tuple.
+    * Sets denote variable length lists, where all elements must match against at least one of the templates in it.
+    * Wildcards have a template, and match any node that matches that template. They also extract the matched node
+        into a field with the wildcard's name. If the same wildcard is used multiple times, all the matched nodes
+        must unparse to the same source code.
+
+    Examples of templates, and what they match:
+    # Match the int 1
+    `ast.Constant(value=1)`
+    # Match the float 1.0
+    `ast.Constant(value=1.0)`
+    # Match any int
+    `ast.Constant(value=int)`
+    # Tuples denote OR syntax, match any int or float
+    `ast.Constant(value=(int, float))`
+    # Match the variable x
+    `ast.Name(id="x")`
+    # Match x(1) and y(1)
+    `ast.Call(func=ast.Name(id=("x", "y")), args=[ast.Constant(value=1)])`
+
     """
     # A type indicates that the node should be an instance of that type,
     # and nothing else. A tuple indicates that the node should be any of
@@ -229,7 +251,9 @@ def _group_nodes_in_scope(scope: ast.AST) -> Mapping[ast.AST, Sequence[ast.AST]]
 def walk_wildcard(
     scope: ast.AST, node_template: ast.AST | Tuple[ast.AST, ...], ignore: Collection[str] = ()
 ) -> Sequence[Tuple[ast.AST, ...]]:
-    """Get nodes in scope of a particular type. Match wildcards.
+    """Iterate over all nodes in scope that match a particular type or template.
+
+    The `node_template` argument supports the same syntax as in match_template().
 
     Args:
         scope (ast.AST): Scope to search
@@ -260,7 +284,11 @@ def walk_wildcard(
 def walk(
     scope: ast.AST, node_template: ast.AST | Tuple[ast.AST, ...], ignore: Collection[str] = ()
 ) -> Sequence[ast.AST]:
-    """Get nodes in scope of a particular type
+    """Iterate over all nodes in scope that match a particular type or template.
+
+    The `node_template` argument supports the same syntax as in match_template(), but
+    only the matched node is returned, and not the full match with wildcards. To get
+    the full match, use `walk_wildcard()` instead.
 
     Args:
         scope (ast.AST): Scope to search
@@ -300,6 +328,7 @@ def _iter_wildcards(
 def walk_sequence(
     scope: ast.Module, *templates: ast.AST, expand_first: bool = False, expand_last: bool = False
 ) -> Iterable[Sequence[ast.AST]]:
+    """Iterate over all sequences of nodes in scope that match a sequence of templates."""
     uncommon = set()
     for node in walk(
         scope, tuple({*constants.AST_TYPES_WITH_BODY, *constants.AST_TYPES_WITH_ORELSE})
@@ -921,40 +950,6 @@ def iter_bodies_recursive(
                 yield node
 
 
-def _get_imports(ast_tree: ast.Module) -> Iterable[ast.Import | ast.ImportFrom]:
-    """Iterate over all import nodes in ast tree. __future__ imports are skipped.
-
-    Args:
-        ast_tree (ast.Module): Ast tree to search for imports
-
-    Yields:
-        str: An import node
-    """
-    for node in walk(ast_tree, ast.Import):
-        yield node
-    for node in walk(ast_tree, ast.ImportFrom):
-        if node.module != "__future__":
-            yield node
-
-
-def get_imported_names(ast_tree: ast.Module) -> Collection[str]:
-    """Get all names that are imported in module.
-
-    Args:
-        ast_tree (ast.Module): Module to search
-
-    Returns:
-        Collection[str]: All imported names.
-    """
-    imports = {
-        alias.name if alias.asname is None else alias.asname
-        for node in _get_imports(ast_tree)
-        for alias in node.names
-    }
-
-    return imports
-
-
 def safe_callable_names(root: ast.Module) -> Collection[str]:
     """Compute what functions can safely be called without having a side effect.
 
@@ -1076,105 +1071,6 @@ def assignment_targets(
             targets.update(walk(target, ast.Name(ctx=ast.Store)))
         return targets
     raise TypeError(f"Expected Assignment type, got {type(node)}")
-
-
-def code_dependencies_outputs(
-    code: Sequence[ast.AST],
-) -> Tuple[Collection[str], Collection[str], Collection[str]]:
-    """Get required and created names in code.
-
-    Args:
-        code (Sequence[ast.AST]): Nodes to find required and created names by
-
-    Raises:
-        ValueError: If any node is a try, class or function def.
-
-    Returns:
-        Tuple[Collection[str], Collection[str]]: created_names, maybe_created_names, required_names
-    """
-    required_names = set()
-    created_names = set()
-    created_names_original = created_names
-    maybe_created_names = set()
-    for node in code:
-        temp_children = []
-        children = []
-        if isinstance(node, (ast.While, ast.For, ast.If)):
-            temp_children = (
-                [node.test] if isinstance(node, (ast.If, ast.While)) else [node.target, node.iter]
-            )
-            children = [node.body, node.orelse]
-            if any(is_blocking(child) for child in ast.walk(node)):
-                created_names = maybe_created_names
-        elif isinstance(node, ast.With):
-            temp_children = tuple(node.items)
-            children = [node.body]
-        elif isinstance(node, (ast.Try, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            required_names.update(name.id for name in walk(node, ast.Name))
-            required_names.update(
-                func.name
-                for func in walk(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            )
-            if isinstance(node, ast.Try):
-                maybe_created_names.update(name.id for name in walk(node, ast.Name(ctx=ast.Store)))
-            continue
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            created_names.update(
-                alias.name if alias.asname is None else alias.asname for alias in node.names
-            )
-            continue
-        else:
-            node_created = set()
-            node_needed = set()
-            generator_internal_names = set()
-            for child in walk(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
-                comp_created = set()
-                for comp in child.generators:
-                    comp_created.update(walk(comp.target, ast.Name(ctx=ast.Store)))
-                for grandchild in ast.walk(child):
-                    if isinstance(grandchild, ast.Name) and grandchild.id in comp_created:
-                        generator_internal_names.add(grandchild)
-            if isinstance(node, ast.AugAssign):
-                node_needed.update(n.id for n in assignment_targets(node))
-            for child in walk(node, ast.Attribute(ctx=ast.Load)):
-                for n in walk(child, ast.Name):
-                    if n not in generator_internal_names:
-                        node_needed.add(n.id)
-            for child in walk(node, ast.Name):
-                if child.id not in node_needed and child not in generator_internal_names:
-                    if isinstance(child.ctx, ast.Load):
-                        node_needed.add(child.id)
-                    elif isinstance(child.ctx, ast.Store):
-                        node_created.add(child.id)
-                    else:
-                        # Del
-                        node_created.discard(child.id)
-                        created_names.discard(child.id)
-                elif isinstance(child.ctx, ast.Store):
-                    maybe_created_names.add(child.id)
-            node_needed -= created_names
-            created_names.update(node_created)
-            maybe_created_names.update(created_names)
-            required_names.update(node_needed)
-            continue
-
-        temp_created, temp_maybe_created, temp_needed = code_dependencies_outputs(temp_children)
-        maybe_created_names.update(temp_maybe_created)
-        created = []
-        needed = []
-        for nodes in children:
-            c_created, c_maybe_created, c_needed = code_dependencies_outputs(nodes)
-            created.append(c_created)
-            maybe_created_names.update(c_maybe_created)
-            needed.append(c_needed - temp_created)
-        node_created = set.intersection(*created) if created else set()
-        node_needed = set.union(*needed) if needed else set()
-        node_needed -= created_names
-        node_needed -= temp_created
-        node_needed |= temp_needed
-        created_names.update(node_created)
-        required_names.update(node_needed)
-    return created_names_original, maybe_created_names, required_names
 
 
 def with_added_indent(node: ast.AST, indent: int):

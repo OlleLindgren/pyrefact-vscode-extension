@@ -7,34 +7,18 @@ import itertools
 import re
 from typing import Collection, Iterable, List, Literal, Mapping, Sequence, Tuple
 
-import isort
 import rmspace
 
-from pyrefact import abstractions, constants, formatting
-from pyrefact import logs as logger
-from pyrefact import parsing, processing, style
-
-
-def _get_undefined_variables(source: str) -> Collection[str]:
-    root = parsing.parse(source)
-    imported_names = parsing.get_imported_names(root)
-    defined_names = set()
-    referenced_names = set()
-    for node in parsing.walk(root, ast.Name):
-        if isinstance(node.ctx, ast.Load):
-            referenced_names.add(node.id)
-        elif isinstance(node.ctx, ast.Store):
-            defined_names.add(node.id)
-    for node in parsing.walk(root, ast.arg):
-        defined_names.add(node.arg)
-
-    return (
-        referenced_names
-        - defined_names
-        - imported_names
-        - {name.split(".")[0] for name in imported_names}
-        - constants.BUILTIN_FUNCTIONS
-    )
+from pyrefact import (
+    abstractions,
+    constants,
+    formatting,
+    logs as logger,
+    parsing,
+    processing,
+    style,
+    tracing,
+)
 
 
 def _get_uses_of(node: ast.AST, scope: ast.AST, source: str) -> Iterable[ast.Name]:
@@ -215,7 +199,7 @@ def _fix_variable_names(
     replacements = []
     ast_tree = parsing.parse(source)
     blacklisted_names = (
-        parsing.get_imported_names(ast_tree)
+        tracing.get_imported_names(ast_tree)
         | constants.BUILTIN_FUNCTIONS
         | constants.PYTHON_KEYWORDS
     )
@@ -298,7 +282,7 @@ def add_missing_imports(source: str) -> str:
     Returns:
         str: Source code with added imports
     """
-    undefined_variables = _get_undefined_variables(source)
+    undefined_variables = tracing.get_undefined_variables(source)
     if undefined_variables:
         return _fix_undefined_variables(source, undefined_variables)
 
@@ -320,7 +304,7 @@ def _get_unused_imports(ast_tree: ast.Module) -> Collection[str]:
     Returns:
         Collection[str]: A collection of names that are imported but never used.
     """
-    imports = parsing.get_imported_names(ast_tree)
+    imports = tracing.get_imported_names(ast_tree)
 
     names = {node.id for node in parsing.walk(ast_tree, ast.Name(ctx=ast.Load))}
     for node in parsing.walk(ast_tree, ast.Attribute):
@@ -474,19 +458,6 @@ def fix_rmspace(source: str) -> str:
     return rmspace.format_str(source)
 
 
-def fix_isort(source: str, *, line_length: int = 100) -> str:
-    """Format source code with isort
-
-    Args:
-        source (str): Python source code
-        line_length (int, optional): Line length. Defaults to 100.
-
-    Returns:
-        str: Source code, formatted with isort
-    """
-    return isort.code(source, config=isort.Config(profile="black", line_length=line_length))
-
-
 @processing.fix
 def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
     root = parsing.parse(source)
@@ -630,7 +601,7 @@ def _iter_unused_names(
     if parsing.match_template(scope, ast.AST(finalbody=list)):
         bodies.append(scope.finalbody)
     if isinstance(scope, (ast.For, ast.While)):
-        *_, required_names = parsing.code_dependencies_outputs([scope])
+        *_, required_names = tracing.code_dependencies_outputs([scope])
         preserve = preserve | required_names
 
     for body in filter(None, bodies):
@@ -642,7 +613,7 @@ def _iter_unused_names(
         }
         name_mentions = collections.defaultdict(set)
         for node in body:
-            _, created_names, required_names = parsing.code_dependencies_outputs([node])
+            _, created_names, required_names = tracing.code_dependencies_outputs([node])
             for name in itertools.chain(created_names, required_names):
                 name_mentions[name].add(node)
         # (3) And group the code in the smallest possible sequences that will contain
@@ -654,14 +625,14 @@ def _iter_unused_names(
         }
         # (4) For every (name, node_sequence) in that grouping,
         for name, sequence in name_node_sequences.items():
-            _, created_names, required_names = parsing.code_dependencies_outputs(sequence)
+            _, created_names, required_names = tracing.code_dependencies_outputs(sequence)
             # (7) For every (node) at position (i) in the sequence,
             for i, node in enumerate(sequence):
                 remainder = sequence[i + 1 :]
                 if isinstance(node, (ast.For, ast.While)):
                     remainder.extend(sequence[:i])
-                _, node_created, _ = parsing.code_dependencies_outputs([node])
-                subsequent_created, _, subsequent_required = parsing.code_dependencies_outputs(
+                _, node_created, _ = tracing.code_dependencies_outputs([node])
+                subsequent_created, _, subsequent_required = tracing.code_dependencies_outputs(
                     remainder
                 )
                 # (8) If (name) is in its outputs, but (name) is not in the dependencies of
@@ -718,10 +689,10 @@ def move_before_loop(source: str) -> str:
                 continue  # i.e. x += 1
 
             remainder = scope.body[i + 1 :] + scope.body[:i]
-            definite_created_names, maybe_created_names, _ = parsing.code_dependencies_outputs(
+            definite_created_names, maybe_created_names, _ = tracing.code_dependencies_outputs(
                 remainder
             )
-            _, node_created_names, node_required_names = parsing.code_dependencies_outputs([node])
+            _, node_created_names, node_required_names = tracing.code_dependencies_outputs([node])
 
             before = scope.body[:i]
             recursive_before_children = itertools.chain(
@@ -731,7 +702,7 @@ def move_before_loop(source: str) -> str:
             if any(parsing.is_blocking(child) for child in recursive_before_children):
                 continue
 
-            _, before_created, before_required = parsing.code_dependencies_outputs(before)
+            _, before_created, before_required = tracing.code_dependencies_outputs(before)
 
             # If the loop may create names that the node depends on, keep it in the loop
             if maybe_created_names & node_required_names:
@@ -744,7 +715,7 @@ def move_before_loop(source: str) -> str:
             if node_created_names & (before_required | before_created):
                 continue
 
-            _, header_created, header_required = parsing.code_dependencies_outputs(header_scope)
+            _, header_created, header_required = tracing.code_dependencies_outputs(header_scope)
 
             if header_created & node_required_names:
                 continue
@@ -1013,8 +984,6 @@ def move_imports_to_toplevel(source: str) -> str:
     if removals or additions:
         logger.debug("Moving imports to toplevel")
         source = processing.alter_code(source, root, removals=removals, additions=additions)
-
-    # Isort will remove redundant imports
 
     return source
 
@@ -2809,14 +2778,24 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
         ]
         if isinstance(assigned_value, (ast.List, ast.Set)):
             elts = assigned_value.elts + other_elts
-            replacement = type(assigned_value)(elts=elts)
+
+            if isinstance(assigned_value, ast.List):
+                replacement = ast.List(elts=elts)
+            else:
+                replacement = ast.Set(elts=elts)
+
             yield assigned_value, replacement
             for m in matches:
                 yield m.root, None
 
         elif isinstance(assigned_value, (ast.ListComp, ast.SetComp)):
             elts = [ast.Starred(value=assigned_value)] + other_elts
-            replacement = type(assigned_value)(elts=elts)
+
+            if isinstance(assigned_value, ast.ListComp):
+                replacement = ast.List(elts=elts)
+            else:
+                replacement = ast.Set(elts=elts)
+
             yield assigned_value, replacement
             for m in matches:
                 yield m.root, None
@@ -3298,5 +3277,229 @@ def missing_context_manager(source: str) -> str:
     if replacements:
         source = processing.alter_code(source, root, replacements=replacements, removals=removals)
         return missing_context_manager(source)
+
+    return source
+
+
+def _fix_duplicate_from_imports(source: str) -> str:
+    """Remove duplicate from-style imports from the same module."""
+    root = parsing.parse(source)
+
+    module_import_aliases = collections.defaultdict(set)
+    module_import_nodes = collections.defaultdict(list)
+
+    for node in parsing.walk(root, ast.ImportFrom):
+        module_import_aliases[node.module].update(
+            (alias.name, alias.asname if alias.asname != alias.name else None)
+            for alias in node.names
+        )
+        module_import_nodes[node.module].append(node)
+
+    replacements = {}
+    removals = set()
+    for module, import_nodes in module_import_nodes.items():
+        if len(import_nodes) > 1:
+            replacements[import_nodes[0]] = ast.ImportFrom(
+                module=module,
+                names=[
+                    ast.alias(name=name, asname=asname)
+                    for name, asname in sorted(
+                        module_import_aliases[module], key=lambda t: (t[0], t[1] is not None, t[1])
+                )],
+                level=import_nodes[0].level,
+            )
+            removals.update(import_nodes[1:])
+
+    if replacements:
+        source = processing.alter_code(source, root, replacements=replacements, removals=removals)
+        return _fix_duplicate_regular_imports(source)
+
+    return source
+
+
+def _fix_duplicate_regular_imports(source: str) -> str:
+    """Remove duplicate plain imports from the same module."""
+    root = parsing.parse(source)
+
+    import_aliases = collections.defaultdict(set)
+    import_nodes = collections.defaultdict(list)
+
+    for node in parsing.walk(root, ast.Import):
+        for alias in node.names:
+            asname = (
+                alias.asname
+                if alias.asname != alias.name and alias.asname is not None
+                else alias.name
+            )
+            name = alias.name
+
+            import_nodes[asname].append(node)
+            import_aliases[name].add(asname)
+
+    replacements = {}
+    removals = set()
+
+    for asname, nodes in import_nodes.items():
+        if len(nodes) > 1:
+            for node in nodes[1:]:
+                new_aliases = {
+                    (alias.name, alias.asname if alias.asname != alias.name else None)
+                    for alias in node.names
+                    if (alias.asname or alias.name) != asname
+                }
+                new_names = [
+                    ast.alias(name=name, asname=asname)
+                    for name, asname in sorted(
+                        new_aliases, key=lambda t: (t[0], t[1] is not None, t[1])
+                )]
+                if new_names:
+                    replacements[node] = ast.Import(names=new_names)
+                else:
+                    removals.add(node)
+
+    if replacements or removals:
+        source = processing.alter_code(source, root, replacements=replacements, removals=removals)
+        return _fix_duplicate_regular_imports(source)
+
+    return source
+
+
+def _breakout_stacked_imports(source: str) -> str:
+    """Breakout stacked imports in the same statement onto separate lines."""
+    root = parsing.parse(source)
+
+    replacements = {}
+    additions = set()
+
+    for node in parsing.walk(root, ast.Import):
+        if len(node.names) <= 1:
+            continue
+
+        names = sorted(
+            {(alias.name, alias.asname) for alias in node.names},
+            key=lambda t: (t[0], t[1] is not None, t[1]),
+        )
+        names = [
+            ast.alias(name=name, asname=asname if asname != name else None)
+            for name, asname in names
+        ]
+        replacements[node] = ast.Import(names=[names[0]])
+        for name in names[1:]:
+            additions.add(ast.Import(names=[name], lineno=node.lineno, col_offset=node.col_offset))
+
+    if replacements or additions:
+        source = processing.alter_code(source, root, replacements=replacements, additions=additions)
+
+    return source
+
+
+def _fix_imported_as_self_or_unsorted(source: str) -> str:
+    root = parsing.parse(source)
+
+    replacements = {}
+    for node in parsing.walk(root, ast.Import):
+        names = [(alias.name, alias.asname) for alias in node.names]
+        expected_names = sorted(
+            [(name, asname if asname != name else None) for name, asname in names],
+            key=lambda t: (t[0], t[1] is not None, t[1]),
+        )
+        if names != expected_names:
+            replacements[node] = ast.Import(
+                names=[ast.alias(name=name, asname=asname) for name, asname in expected_names]
+            )
+
+    for node in parsing.walk(root, ast.ImportFrom):
+        names = [(alias.name, alias.asname) for alias in node.names]
+        expected_names = sorted(
+            [(name, asname if asname != name else None) for name, asname in names],
+            key=lambda t: (t[0], t[1] is not None, t[1]),
+        )
+        if names != expected_names:
+            replacements[node] = ast.ImportFrom(
+                module=node.module,
+                names=[ast.alias(name=name, asname=asname) for name, asname in expected_names],
+                level=node.level,
+            )
+
+    if replacements:
+        source = processing.alter_code(source, root, replacements=replacements)
+
+    return source
+
+
+def fix_duplicate_imports(source: str) -> str:
+    """Fix duplicate imports in the same statement."""
+
+    source = _fix_duplicate_from_imports(source)
+    source = _fix_duplicate_regular_imports(source)
+    source = _breakout_stacked_imports(source)
+
+    return source
+
+
+def _is_stdlib(node: ast.Import | ast.ImportFrom) -> bool:
+    """Determine if all modules in an import statement are from the standard library."""
+    if isinstance(node, ast.ImportFrom):
+        return (node.module or "").split(".")[0] in constants.PYTHON_311_STDLIB
+
+    if isinstance(node, ast.Import):
+        return {alias.name.split(".")[0] for alias in node.names} <= constants.PYTHON_311_STDLIB
+
+    raise ValueError(f"Expected Import or ImportFrom, got {type(node)}")
+
+
+def _import_group_key(node: ast.Import | ast.ImportFrom) -> Tuple[int, int]:
+    return (
+        not (isinstance(node, ast.ImportFrom) and node.module == "__future__"),
+        not _is_stdlib(node),
+        node.level != 0 if isinstance(node, ast.ImportFrom) else False,
+        -node.level if isinstance(node, ast.ImportFrom) else 0,
+        isinstance(node, ast.ImportFrom) and node.module is not None,
+        isinstance(node, ast.ImportFrom),
+        (node.module or "") if isinstance(node, ast.ImportFrom) else "",
+        tuple(sorted(alias.name for alias in node.names)),
+        tuple(sorted(alias.asname or alias.name for alias in node.names)),
+    )
+
+
+def _sort_import_statements(source: str) -> str:
+    root = parsing.parse(source)
+
+    # Get unique groups of imports, such that they're as long as possible, and don't overlap.
+    groups = [
+        [m[0] for m in matches]
+        for matches in parsing.walk_sequence(
+            root, (ast.Import, ast.ImportFrom), expand_first=True, expand_last=True
+    )]
+    node_groups = collections.defaultdict(list)
+    for group in groups:
+        for node in group:
+            node_groups[node].append(group)
+    node_groups = {node: max(node_groups, key=len) for node, node_groups in node_groups.items()}
+    groups = {id(group): group for group in node_groups.values()}.values()
+    groups = sorted(groups, key=lambda group: min(n.lineno for n in group))
+
+    # Sort each group.
+    replacements = {}
+    for nodes in groups:
+        if len(nodes) < 2 or set(nodes) & replacements.keys():
+            continue
+
+        sorted_nodes = sorted(nodes, key=_import_group_key)
+        for node, sorted_node in zip(nodes, sorted_nodes):
+            if node is not sorted_node:
+                replacements[node] = sorted_node
+
+    if replacements:
+        source = processing.alter_code(source, root, replacements=replacements)
+
+    return source
+
+
+def sort_imports(source: str) -> str:
+    """Sort imports in alphabetic order. Respect existing import groups."""
+
+    source = _sort_import_statements(source)
+    source = _fix_imported_as_self_or_unsorted(source)
 
     return source
