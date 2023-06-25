@@ -5,10 +5,11 @@ import collections
 import functools
 import heapq
 import re
+import textwrap
 from types import MappingProxyType
 from typing import Callable, Collection, Iterable, Literal, Mapping, NamedTuple, Sequence
 
-from pyrefact import logs as logger, parsing
+from pyrefact import core, formatting, logs as logger
 
 
 MSG_INFO_REPLACE = """{fix_function_name:<40}: Replacing code:
@@ -21,13 +22,8 @@ MSG_INFO_REMOVE = """{fix_function_name:<40}: Removing code:
 **********************"""
 
 
-class Range(NamedTuple):
-    start: int  # Character number
-    end: int  # Character number
-
-
 class _Rewrite(NamedTuple):
-    old: ast.AST | Range  # TODO replace with (start_char, end_char)
+    old: ast.AST | core.Range  # TODO replace with (start_char, end_char)
     new: ast.AST | str  # "" indicates a removal
 
 
@@ -46,11 +42,11 @@ def _substitute_original_strings(original_source: str, new_source: str) -> str:
     Returns:
         str: new_source, but with consistent string formattings as in original_source
     """
-    original_ast = parsing.parse(original_source)
+    original_ast = core.parse(original_source)
 
     original_string_formattings = collections.defaultdict(set)
-    for node in parsing.walk(original_ast, ast.Constant(value=str)):
-        original_string_formattings[node.value].add(parsing.get_code(node, original_source))
+    for node in core.walk(original_ast, ast.Constant(value=str)):
+        original_string_formattings[node.value].add(core.get_code(node, original_source))
 
     for value, sources in original_string_formattings.items():
         template = ast.Module(body=[ast.Expr(value=ast.Constant(value=value))])
@@ -59,23 +55,23 @@ def _substitute_original_strings(original_source: str, new_source: str) -> str:
         tmp = {
             src
             for src in sources
-            if parsing.is_valid_python(src) and parsing.match_template(parsing.parse(src), template)
+            if core.is_valid_python(src) and core.match_template(core.parse(src), template)
         }
         sources.clear()
         sources.update(tmp)
 
     replacements = {}
-    new_ast = parsing.parse(new_source)
-    for node in parsing.walk(new_ast, ast.Constant(value=tuple(original_string_formattings))):
+    new_ast = core.parse(new_source)
+    for node in core.walk(new_ast, ast.Constant(value=tuple(original_string_formattings))):
         # If this new string formatting doesn't exist in the orignal source, find the most
         # common orignal equivalent string formatting and use that instead.
         original_formattings = original_string_formattings[node.value]
-        new_formatting = parsing.get_code(node, new_source)
+        new_formatting = core.get_code(node, new_source)
         template = ast.Module(body=[ast.Expr(value=ast.Constant(value=node.value))])
         if (
             original_formattings
-            and parsing.is_valid_python(new_formatting)
-            and parsing.match_template(parsing.parse(new_formatting), template)
+            and core.is_valid_python(new_formatting)
+            and core.match_template(core.parse(new_formatting), template)
             and new_formatting not in original_formattings
         ):
             most_common_original_formatting = collections.Counter(original_formattings).most_common(
@@ -101,25 +97,25 @@ def _substitute_original_fstrings(original_source: str, new_source: str) -> str:
     Returns:
         str: new_source, but with consistent string formattings as in original_source
     """
-    original_ast = parsing.parse(original_source)
+    original_ast = core.parse(original_source)
     original_string_formattings = collections.defaultdict(set)
-    for node in parsing.walk(original_ast, ast.JoinedStr):
-        code = parsing.get_code(node, original_source)
-        unparsed_code = parsing.unparse(node)
-        if parsing.is_valid_python(code):
+    for node in core.walk(original_ast, ast.JoinedStr):
+        code = core.get_code(node, original_source)
+        unparsed_code = core.unparse(node)
+        if core.is_valid_python(code):
             original_string_formattings[unparsed_code].add(code)
 
     replacements = {}
-    new_ast = parsing.parse(new_source)
-    for node in parsing.walk(new_ast, ast.JoinedStr):
+    new_ast = core.parse(new_source)
+    for node in core.walk(new_ast, ast.JoinedStr):
         # If this new string formatting doesn't exist in the orignal source, find the most
         # common orignal equivalent string formatting and use that instead.
-        unparsed_code = parsing.unparse(node)
+        unparsed_code = core.unparse(node)
         original_formattings = original_string_formattings[unparsed_code]
-        new_formatting = parsing.get_code(node, new_source)
+        new_formatting = core.get_code(node, new_source)
         if (
             original_formattings
-            and parsing.is_valid_python(new_formatting)
+            and core.is_valid_python(new_formatting)
             and new_formatting not in original_formattings
         ):
             most_common_original_formatting = collections.Counter(original_formattings).most_common(
@@ -144,7 +140,7 @@ def remove_nodes(source: str, nodes: Iterable[ast.AST], root: ast.Module) -> str
     keep_mask = [True] * len(source)
     nodes = list(nodes)
     for node in nodes:
-        start, end = parsing.get_charnos(node, source)
+        start, end = core.get_charnos(node, source)
 
         # If multiple "lines" are on the same line, with a semicolon in between,
         # we also need to purge the semicolon and any whitespace before and after it
@@ -157,7 +153,7 @@ def remove_nodes(source: str, nodes: Iterable[ast.AST], root: ast.Module) -> str
 
     passes = [len(source) + 1]
 
-    for node in parsing.walk(root, ast.AST):
+    for node in core.walk(root, ast.AST):
         if isinstance(node, ast.Module):
             continue
         for bodytype in "body", "finalbody", "orelse":
@@ -168,7 +164,7 @@ def remove_nodes(source: str, nodes: Iterable[ast.AST], root: ast.Module) -> str
                     and node not in nodes
                 ):
                     logger.debug("Found empty {bodytype}", bodytype=bodytype)
-                    start_charno, _ = parsing.get_charnos(body[0], source)
+                    start_charno, _ = core.get_charnos(body[0], source)
                     passes.append(start_charno)
 
     heapq.heapify(passes)
@@ -191,12 +187,12 @@ def remove_nodes(source: str, nodes: Iterable[ast.AST], root: ast.Module) -> str
 
 def _asts_equal(ast1: ast.AST, ast2: ast.AST):
     """Determine if two ASTs are the same."""
-    return parsing.unparse(ast1) == parsing.unparse(ast2)
+    return core.unparse(ast1) == core.unparse(ast2)
 
 
 def _sources_equivalent(source1: str, source2: ast.AST) -> bool:
     """Determine if two source code snippets produce the same ASTs."""
-    return _asts_equal(parsing.parse(source1), parsing.parse(source2))
+    return _asts_equal(core.parse(source1), core.parse(source2))
 
 
 def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") -> str:
@@ -208,24 +204,34 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         if new_code == code:
             return source
     elif isinstance(new, ast.AST):
-        new_code = parsing.unparse(new)
+        new_code = core.unparse(new)
     else:
         raise TypeError(f"Invalid replacement type: {type(new)}")
 
-    if isinstance(old, Range):
-        return source[: old.start] + new_code + source[old.end :]
+    if isinstance(old, core.Range):
+        # Prevent whitespace-only changes from being applied
+        new_code_lines = [l.rstrip() for l in new_code.splitlines() if l.strip()]
+        code_lines = [l.rstrip() for l in code.splitlines() if l.strip()]
+        if new_code_lines == code_lines:
+            return source
+
+        new_code = source[: old.start] + new_code + source[old.end :]
+        logger.debug(
+            MSG_INFO_REPLACE, fix_function_name=fix_function_name, old_code=code, new_code=new_code
+        )
+        return new_code
 
     lines = new_code.splitlines(keepends=True)
     indent = getattr(old, "col_offset", getattr(new, "col_offset", 0))
     indents = {**{i: indent for i in range(len(lines))}, 0: len(code) - len(code.lstrip(" "))}
 
     try:
-        new_code_ast = parsing.parse(new_code)
+        new_code_ast = core.parse(new_code)
     except SyntaxError:
         pass  # new_code is not necessarily valid python syntax in all cases
     else:
-        for node in parsing.walk(new_code_ast, (ast.Constant(value=str), ast.JoinedStr)):
-            node_code = parsing.get_code(node, new_code)
+        for node in core.walk(new_code_ast, (ast.Constant(value=str), ast.JoinedStr)):
+            node_code = core.get_code(node, new_code)
             if any(
                 node_code.startswith(prefix) and node_code.endswith(prefix[-3:])
                 for prefix in ("b'''", "r'''", "f'''", "'''", 'b"""', 'r"""', 'f"""', '"""')
@@ -285,7 +291,7 @@ def insert_nodes(source: str, additions: Collection[ast.AST]) -> str:
     lines = source.splitlines(keepends=True)
 
     for node in sorted(additions, key=lambda n: n.lineno, reverse=True):
-        addition = parsing.unparse(node)
+        addition = core.unparse(node)
         col_offset = getattr(node, "col_offset", 0)
         logger.debug("Adding:\n{new}", new=addition)
         lines = (
@@ -343,7 +349,7 @@ def alter_code(
             -priorities["additions"],
             getattr(x, "col_offset", 0),
             "add",
-            parsing.unparse(x),
+            core.unparse(x),
             x,
             )
             for x in additions
@@ -353,7 +359,7 @@ def alter_code(
             -priorities["removals"],
             getattr(x, "col_offset", 0),
             "delete",
-            parsing.unparse(x),
+            core.unparse(x),
             x,
             )
             for x in removals
@@ -363,7 +369,7 @@ def alter_code(
             -priorities["replacements"],
             getattr(x, "col_offset", 0),
             "replace",
-            parsing.unparse(x),
+            core.unparse(x),
             (x, y),
             )
             for x, y in replacements.items()
@@ -385,15 +391,15 @@ def alter_code(
     return source
 
 
-def _get_charnos(obj: _Rewrite, source: str):
+def _get_charnos(obj: _Rewrite, source: str) -> core.Range:
     old, new = obj
-    if isinstance(old, Range):
-        return old.start, old.end
+    if isinstance(old, core.Range):
+        return core.Range(old.start, old.end)
 
     if old is not None:
-        return parsing.get_charnos(old, source)
+        return core.get_charnos(old, source)
 
-    return parsing.get_charnos(new, source)
+    return core.get_charnos(new, source)
 
 
 def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) -> Callable:
@@ -427,7 +433,7 @@ def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) 
             rewrites = (_Rewrite(old, new or "") for old, new in func(source, *args, **kwargs))
             if sort_order:
                 rewrites = sorted(
-                    rewrites, key=functools.partial(_get_charnos, source=source), reverse=True
+                    set(rewrites), key=functools.partial(_get_charnos, source=source), reverse=True
                 )
 
             for rewrite in rewrites:
@@ -444,3 +450,87 @@ def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) 
         return fix_decorator(maybe_func[0])
 
     raise ValueError(f"Exactly 1 or 0 arguments must be given as maybe_func, not {len(maybe_func)}")
+
+
+def find_replace(
+    source: str,
+    root: ast.AST = None,
+    *,
+    find: str | ast.AST,
+    replace: str,
+    expand_first: bool = None,
+    expand_last: bool = None,
+    yield_match: bool = False,
+    **callables_or_templates,
+) -> Iterable[core.Range, str]:
+    """Swap a find with a replacement.
+
+    Args:
+        source (str): Python source code.
+        root (ast.AST): Parsed AST to search. If not provided, source is parsed.
+        find (ast.AST | str | tuple[str]): Template, tuple of templates, or compiled template to find.
+        replace (ast.AST): Uncompiled template to replace found find with.
+        expand_first (bool, optional): If passed, forwarded to `core.walk_wildcard`.
+        expand_last (bool, optional): If passed, forwarded to `core.walk_wildcard`.
+        yield_match (bool, optional): If True, yields the matches as well as the replacements.
+
+    Yields:
+        Iterable[Range, str]: Range of the replacement and the replacement itself.
+    """
+    callables = {}
+    templates = {}
+    for name, value in callables_or_templates.items():
+        if callable(value) and not isinstance(value, type):
+            callables[name] = value
+        else:
+            templates[name] = value
+    if root is None:
+        root = ast.parse(source)
+    if isinstance(find, str):
+        find = (find,)
+    if isinstance(find, (tuple, set)) and isinstance(find[0], str):
+        find = type(find)(
+            core.compile_template(
+                f,
+                **{
+                    **{name.strip("{}"): object for name in re.findall(r"\{\{\w+\}\}", f)},
+                    **templates
+                }
+            )
+            for f in find
+        )
+    if isinstance(find, tuple) and len(find) == 1:
+        find = find[0]
+
+    if isinstance(find, list):
+        walk_sequence_kwargs = {"expand_first": expand_first, "expand_last": expand_last}
+        walk_sequence_kwargs = {k: v for k, v in walk_sequence_kwargs.items() if v is not None}
+        iterator = core.walk_sequence(root, *find, **walk_sequence_kwargs)
+    else:
+        iterator = [[m] for m in core.walk_wildcard(root, find)]
+
+    for matches in iterator:
+        if isinstance(find, list):
+            combined_match = core.merge_matches(root, matches)
+        else:
+            combined_match = matches[0]
+
+        if not combined_match:
+            continue
+
+        ranges = [core.get_charnos(m[0], source) for m in matches]
+        range_start = min(r[0] for r in ranges)
+        range_end = max(r[1] for r in ranges)
+        replacement_range = core.Range(range_start, range_end)
+
+        template_replacement = core.format_template(replace, combined_match, **callables)
+
+        indentation = formatting.indentation_level(source[range_start:range_end])
+
+        template_replacement = textwrap.dedent(template_replacement)
+        template_replacement = textwrap.indent(template_replacement, " " * indentation)
+
+        if yield_match:
+            yield replacement_range, template_replacement, combined_match
+        else:
+            yield replacement_range, template_replacement

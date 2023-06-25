@@ -82,17 +82,17 @@ pathspec==0.11.1 \
     --hash=sha256:2798de800fa92780e33acca925945e9a19a133b715067cf165b8866c15a31687 \
     --hash=sha256:d8af70af76652554bd134c22b3e8a1cc46ed7d91edcdd721ef1a0c51a84a5293
     # via black
-platformdirs==3.7.0 \
-    --hash=sha256:87fbf6473e87c078d536980ba970a472422e94f17b752cfad17024c18876d481 \
-    --hash=sha256:cfd065ba43133ff103ab3bd10aecb095c2a0035fcd1f07217c9376900d94ba07
+platformdirs==3.8.0 \
+    --hash=sha256:b0cabcb11063d21a0b261d557acb0a9d2126350e63b70cdf7db6347baea456dc \
+    --hash=sha256:ca9ed98ce73076ba72e092b23d3c93ea6c4e186b3f1c3dad6edd98ff6ffcca2e
     # via black
 pygls==1.0.2 \
     --hash=sha256:6d278d29fa6559b0f7a448263c85cb64ec6e9369548b02f1a7944060848b21f9 \
     --hash=sha256:888ed63d1f650b4fc64d603d73d37545386ec533c0caac921aed80f80ea946a4
     # via -r ./requirements.in
-pyrefact==85 \
-    --hash=sha256:89c47d2ab616ab61005e601e6ed9f39943d308fd5e09f3763a00cd9e77a48517 \
-    --hash=sha256:936146d63d70aa54afcb24b419fd3414b5061d1bfdbeaf74f21633307fb6be2b
+pyrefact==87 \
+    --hash=sha256:aae7bb4e8341ea2c901d33ddf33c8360c2fa214e6599a3ceaf0da1beb61a7c15 \
+    --hash=sha256:ccd5c52a64d474b9c619f7ee2954f1d1327d40adbe38363cd0109093289e9953
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \

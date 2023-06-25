@@ -2,17 +2,7 @@
 
 import ast
 
-from pyrefact import parsing, performance_numpy, processing
-
-
-def _is_contains_comparison(node) -> bool:
-    if not isinstance(node, ast.Compare):
-        return False
-    if len(node.ops) != 1:
-        return False
-    if not isinstance(node.ops[0], ast.In):
-        return False
-    return True
+from pyrefact import constants, core, processing
 
 
 def _can_be_evaluated_safe(node: ast.AST) -> bool:
@@ -42,19 +32,38 @@ def optimize_contains_types(source: str) -> str:
     Returns:
         str: Modified python source code
     """
-    root = parsing.parse(source)
+    root = core.parse(source)
+    find = (
+        "{{element}} in {{wrapper}}({{collection}})"
+    )
+    replace = "{{element}} in {{collection}}"
+    wrapper_names = ("sorted", "list", "tuple", "set", "iter", "reversed")
+    template = core.compile_template(find, wrapper=ast.Name(id=wrapper_names))
+
+    yield from processing.find_replace(source, root, find=template, replace=replace)
 
     sorted_list_tuple_call_template = ast.Call(
         func=ast.Name(id=("sorted", "list", "tuple"), ctx=ast.Load), args=[object], keywords=[]
     )
 
-    for node in filter(_is_contains_comparison, parsing.walk(root, ast.Compare)):
+    template = core.compile_template(
+        "{{element}} in {{collection}}",
+        collection=(
+            ast.ListComp,
+            ast.DictComp,
+            ast.SetComp,
+            ast.List,
+            ast.Tuple,
+        )
+    )
+
+    for node in core.walk(root, template):
         for comp in node.comparators:
-            if isinstance(comp, ast.ListComp):
+            if isinstance(comp, (ast.ListComp, ast.SetComp)):
                 yield comp, ast.GeneratorExp(elt=comp.elt, generators=comp.generators)
 
             elif isinstance(comp, ast.DictComp):
-                yield comp, ast.SetComp(elt=comp.key, generators=comp.generators)
+                yield comp, ast.GeneratorExp(elt=comp.key, generators=comp.generators)
 
             elif isinstance(comp, (ast.List, ast.Tuple)):
                 preferred_type = (
@@ -63,23 +72,23 @@ def optimize_contains_types(source: str) -> str:
                 if not isinstance(comp, preferred_type):
                     yield comp, preferred_type(elts=comp.elts)
 
-            elif parsing.match_template(comp, sorted_list_tuple_call_template):
+            elif core.match_template(comp, sorted_list_tuple_call_template):
                 yield comp, comp.args[0]
 
 
 @processing.fix
 def remove_redundant_iter(source: str) -> str:
-    root = parsing.parse(source)
+    root = core.parse(source)
     iter_template = ast.Call(func=ast.Name(id=("iter", "list", "tuple")), args=[object])
     template = (ast.For(iter=iter_template), ast.comprehension(iter=iter_template))
 
-    for node in parsing.walk(root, template):
+    for node in core.walk(root, template):
         yield node.iter, node.iter.args[0]
 
 
 @processing.fix(restart_on_replace=True)
 def remove_redundant_chained_calls(source: str) -> str:
-    root = parsing.parse(source)
+    root = core.parse(source)
 
     # If outer is present, inner is redundant
     outer_inner_redundancy_mapping = {
@@ -99,9 +108,9 @@ def remove_redundant_chained_calls(source: str) -> str:
         for key, values in outer_inner_redundancy_mapping.items()
     )
 
-    for node in parsing.walk(root, templates):
+    for node in core.walk(root, templates):
         arg = node.args[0].args[0]
-        while parsing.match_template(arg, templates):
+        while core.match_template(arg, templates):
             arg = arg.args[0].args[0]
         yield node, ast.Call(func=node.func, args=[arg], keywords=[])
 
@@ -121,57 +130,64 @@ def remove_redundant_chained_calls(source: str) -> str:
         for key, values in inner_outer_redundancy_mapping.items()
     )
 
-    for node in parsing.walk(root, templates):
+    for node in core.walk(root, templates):
         yield node, node.args[0]
+
+
+def _slice_of(node: ast.Subscript) -> ast.AST:
+    node_slice = node.slice
+    if constants.PYTHON_VERSION < (3, 9):
+        if isinstance(node_slice, ast.Index):
+            return node_slice.value
+        if isinstance(node_slice, ast.ExtSlice):
+            return ast.Tuple(elts=node_slice.dims)
+
+    return node_slice
 
 
 @processing.fix
 def replace_sorted_heapq(source: str) -> str:
-    root = parsing.parse(source)
+    root = core.parse(source)
 
-    heapq_nlargest = ast.Attribute(
-        value=ast.Name(id="heapq", ctx=ast.Load()), attr="nlargest", ctx=ast.Load()
-    )
-    heapq_nsmallest = ast.Attribute(
-        value=ast.Name(id="heapq", ctx=ast.Load()), attr="nsmallest", ctx=ast.Load()
-    )
-    builtin_max = ast.Name(id="max", ctx=ast.Load())
-    builtin_min = ast.Name(id="min", ctx=ast.Load())
-    builtin_list = ast.Name(id="list", ctx=ast.Load())
-    builtin_reversed = ast.Name(id="reversed", ctx=ast.Load())
+    heapq_nlargest = core.compile_template("heapq.nlargest")
+    heapq_nsmallest = core.compile_template("heapq.nsmallest")
+    builtin_max = core.compile_template("max")
+    builtin_min = core.compile_template("min")
+    builtin_list = core.compile_template("list")
+    builtin_reversed = core.compile_template("reversed")
 
     template_sorted_subscript = ast.Subscript(
         value=ast.Call(func=ast.Name(id="sorted"), args=[object], keywords={ast.keyword(arg="key")})
     )
 
     # Slice templates
-    template_first_element = ast.Constant(value=0)
-    template_last_element = ast.UnaryOp(op=ast.USub, operand=ast.Constant(value=1))
-    template_first_n = ast.Slice(lower=None, upper=ast.AST)
-    template_last_n = ast.Slice(lower=ast.UnaryOp(op=ast.USub), upper=None)
+    template_first_element = core.compile_template("0")
+    template_last_element = core.compile_template("-1")
+    template_first_n = core.compile_template("sequence[:{{n}}]", n=ast.AST).slice
+    template_last_n = core.compile_template("sequence[-{{n}}:]", n=ast.AST).slice
 
-    for node in parsing.walk(root, template_sorted_subscript):
+    for node in core.walk(root, template_sorted_subscript):
         args = node.value.args
         keywords = node.value.keywords
-        node_slice = parsing.slice_of(node)
-        if parsing.match_template(node_slice, template_first_element):
+        node_slice = _slice_of(node)
+        if core.match_template(node_slice, template_first_element):
             replacement = ast.Call(
                 func=builtin_min, args=args, keywords=keywords, lineno=node.lineno
             )
             yield node, replacement
-        elif parsing.match_template(node_slice, template_last_element):
+        elif core.match_template(node_slice, template_last_element):
             replacement = ast.Call(
                 func=builtin_max, args=args, keywords=keywords, lineno=node.lineno
             )
             yield node, replacement
-        elif parsing.match_template(node_slice, template_first_n) and not isinstance(
+        elif core.match_template(node_slice, template_first_n) and not isinstance(
             node_slice.upper, ast.UnaryOp
         ):
             func = heapq_nsmallest
             value = node_slice.upper
             replacement = ast.Call(func=func, args=[value] + args, keywords=keywords)
             yield node, replacement
-        elif parsing.match_template(node_slice, template_last_n):
+        elif core.match_template(node_slice, template_last_n):
             func = heapq_nlargest
             value = node_slice.lower.operand
             replacement = ast.Call(
@@ -190,137 +206,119 @@ def _wrap_transpose(node: ast.AST) -> ast.Call:
     return ast.Call(func=ast.Name(id="zip"), args=[ast.Starred(value=node)], keywords=[])
 
 
-def replace_subscript_looping(source: str) -> str:
-    root = parsing.parse(source)
-
-    replacements = {}
-
-    generator_comp_template = ast.comprehension(
-        target=ast.Name, iter=ast.Call(func=ast.Name(id="range"))
+@processing.fix(restart_on_replace=True)
+def _replace_subscript_looping_simple_cases(source: str) -> str:
+    yield from processing.find_replace(
+        source,
+        find="[{{sequence}}[{{index}}] for {{index}} in range(len({{sequence}}))]",
+        replace="list({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="[{{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}}))]",
+        replace="list({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="[{{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0])]",
+        replace="list({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="[{{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0])]",
+        replace="list({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="[{{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1])]",
+        replace="list({{sequence}}.T)",
+    )
+    yield from processing.find_replace(
+        source,
+        find="({{sequence}}[{{index}}] for {{index}} in range(len({{sequence}})))",
+        replace="iter({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="({{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}})))",
+        replace="iter({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="({{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0]))",
+        replace="iter({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="({{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0]))",
+        replace="iter({{sequence}})",
+    )
+    yield from processing.find_replace(
+        source,
+        find="({{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1]))",
+        replace="iter({{sequence}}.T)",
     )
 
-    generator_template = (
-        ast.ListComp(generators=[generator_comp_template]),
-        ast.SetComp(generators=[generator_comp_template]),
-        ast.GeneratorExp(generators=[generator_comp_template]),
+
+@processing.fix
+def _replace_subscript_looping_complex_cases(source: str) -> str:
+    target_template = core.Wildcard("target", ast.Name, common=True)
+    index_template = core.Wildcard("index", ast.Name, common=True)
+    target_length_template = core.compile_template(
+        ("len({{target}})", "{{target}}.shape[0]"),
+        target=target_template,
     )
-
-    for comp in parsing.walk(root, generator_template):
-        wrapper_function = parsing.get_comp_wrapper_func_equivalent(comp)
-
-        elt_subscripts = {
-            node
-            for node in parsing.walk(comp.elt, ast.Subscript)
-            if isinstance(node.value, (ast.Attribute, ast.Name))
-            and any(
-                {name.id for name in parsing.walk(node, ast.Name)}
-                & {name.id for name in parsing.walk(comp.generators[0], ast.Name)}
-        )}
-        if not all(
-            parsing.match_template(
-                subscript, ast.Subscript(value=(ast.Name, ast.Attribute(value=ast.Name)))
-            )
-            for subscript in elt_subscripts
-        ):
-            continue
-
-        subscript_name = comp.generators[0].target.id
-        subscripted_names = {
-            subscript.value.id
-            if isinstance(subscript.value, ast.Name)
-            else subscript.value.value.id
-            for subscript in elt_subscripts
+    target_length_template_transpose = core.compile_template(
+        ("len({{target}}.T)", "{{target}}.shape[1]"),
+        target=target_template,
+    )
+    target_indexed_template = core.compile_template(
+        "{{target}}[{{index}}]", target=target_template, index=index_template
+    )
+    comprehension_template = ast.comprehension(
+        target=index_template,
+        iter=ast.Call(
+            func=ast.Name(id="range"),
+            args=[(target_length_template, target_length_template_transpose)],
+        ),
+        ifs=[],
+    )
+    comp_template = (
+        ast.ListComp(generators=[comprehension_template]),
+        ast.GeneratorExp(generators=[comprehension_template]),
+        ast.SetComp(generators=[comprehension_template]),
+        ast.DictComp(generators=[comprehension_template]),
+    )
+    root = core.parse(source)
+    for template_match in core.walk_wildcard(root, comp_template):
+        comprehension = template_match.root.generators[0]
+        target_indexed_template = core.compile_template(
+            ("{{target}}[{{index}}]", "{{target}}[{{index}}, :]", "{{target}}[:, {{index}}]"),
+            target=template_match.target,
+            index=template_match.index,
+        )
+        target_indexed_nodes = set(core.walk(template_match.root, target_indexed_template))
+        target_used_nodes = set(core.walk(template_match.root, template_match.target)) - {
+            comprehension.target
         }
-        if len(subscripted_names) != 1:
-            continue
-        subscripted_name = subscripted_names.pop()
 
-        if not all(
-            parsing.match_template(subscript, ast.Subscript(value=ast.Name(id=subscripted_name)))
-            and (
-                parsing.match_template(
-                    parsing.slice_of(subscript),
-                    (
-                        ast.Name(id=subscript_name),
-                        ast.Tuple(
-                            elts=[(
-                                ast.Slice,
-                                ast.Name(id=subscript_name),
-                                ast.Index(value=ast.Name(id=subscript_name)),
-                            )]
-                            * 2
-            ),),))
-            for subscript in elt_subscripts
-        ):
-            # All subscripts are not a[i, :], a[:, i] or a[i]
+        if len(target_indexed_nodes) != len(target_used_nodes):
             continue
 
-        uses_of_subscript_name = set(parsing.walk(comp.elt, ast.Name(id=subscript_name)))
-        for subscript in parsing.walk(comp.elt, ast.Subscript):
-            for value in parsing.walk(parsing.slice_of(subscript), ast.Name):
-                uses_of_subscript_name.discard(value)
+        new_index_name = f"{template_match.target.id}_{template_match.index.id}"
 
-        if uses_of_subscript_name:
-            # i is used for something other than subscripting a
-            continue
+        yield comprehension.target, ast.Name(id=new_index_name)
+        if core.match_template(comprehension.iter.args[0], target_length_template):
+            yield comprehension.iter, template_match.target
+        else:
+            yield comprehension.iter, _wrap_transpose(template_match.target)
 
-        iterated_node = comp.generators[0].iter
+        for node in target_indexed_nodes:
+            yield node, ast.Name(id=new_index_name)
 
-        if parsing.match_template(
-            iterated_node.args,
-            [ast.Call(func=ast.Name(id="len"), args=[ast.Name(id=subscripted_name)])],
-        ) and parsing.match_template(
-            comp.elt,
-            ast.Subscript(
-                value=ast.Name(id=subscripted_name),
-                slice=(
-                    ast.Index(value=ast.Name(id=subscript_name)),
-                    ast.Tuple(
-                        elts=[  # python >= 3.9
-                            ast.Index(value=ast.Name(id=subscript_name)),
-                            ast.Slice(),
-                    ]),
-                    ast.ExtSlice(
-                        dims=[  # python <= 3.8
-                            ast.Index(value=ast.Name(id=subscript_name)),
-                            ast.Slice(),
-        ]),),),):
-            replacements[comp] = ast.Call(
-                func=ast.Name(id=wrapper_function),
-                args=[ast.Name(id=subscripted_name)],
-                keywords=[],
-            )
-            break
 
-        if not parsing.match_template(
-            iterated_node.args,
-            [ast.Subscript(value=ast.Attribute(value=ast.Name(id=subscripted_name), attr="shape"))],
-        ):
-            continue
-
-        if parsing.match_template(parsing.slice_of(iterated_node.args[0]), ast.Constant(value=1)):
-            if performance_numpy.uses_numpy(root):
-                transposed_name = performance_numpy.wrap_transpose(ast.Name(id=subscripted_name))
-            else:
-                transposed_name = _wrap_transpose(ast.Name(id=subscripted_name))
-            replacements[comp.generators[0].iter] = transposed_name
-            target_name = ast.Name(id=f"{subscripted_name}_")
-            replacements[comp.generators[0].target] = target_name
-            for subscript in elt_subscripts:
-                replacements[subscript] = target_name
-            break
-
-        if parsing.match_template(parsing.slice_of(iterated_node.args[0]), ast.Constant(value=0)):
-            replacements[comp.generators[0].iter] = ast.Name(id=subscripted_name)
-            target_name = ast.Name(id=f"{subscripted_name}_")
-            replacements[comp.generators[0].target] = target_name
-            for subscript in elt_subscripts:
-                replacements[subscript] = target_name
-            break
-
-    source = processing.replace_nodes(source, replacements)
-
-    if replacements:
-        return replace_subscript_looping(source)
+def replace_subscript_looping(source: str) -> str:
+    source = _replace_subscript_looping_simple_cases(source)
+    source = _replace_subscript_looping_complex_cases(source)
 
     return source

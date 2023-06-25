@@ -16,6 +16,8 @@ from typing import Collection, Iterable, Sequence
 from pyrefact import abstractions, fixes
 from pyrefact import logs as logger
 from pyrefact import (
+    core,
+    formatting,
     object_oriented,
     parsing,
     performance,
@@ -27,16 +29,6 @@ from pyrefact import (
 
 MAX_MODULE_PASSES = 5
 MAX_FILE_PASSES = 25
-
-
-def _inspect_indentsize(line: str) -> int:
-    """Return the indent size, in spaces, at the start of a line of text.
-
-    This function is the same as the undocumented inspect.indentsize() function in the stdlib.
-    For stability, we copy the code here rather than depending on the undocumented stdlib function.
-    """
-    expline = line.expandtabs()
-    return len(expline) - len(expline.lstrip())
 
 
 def _parse_args(args: Sequence[str]) -> argparse.Namespace:
@@ -125,9 +117,9 @@ def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
     source = fixes.replace_dictcomp_update_with_dict_literal(source)
     source = fixes.simplify_dict_unpacks(source)
     source = fixes.remove_duplicate_dict_keys(source)
+    source = performance_numpy.replace_implicit_matmul(source)
     source = performance.replace_subscript_looping(source)
     source = performance_numpy.replace_implicit_dot(source)
-    source = performance_numpy.replace_implicit_matmul(source)
     source = fixes.simplify_transposes(source)
     source = performance_numpy.simplify_matmul_transposes(source)
     source = fixes.simplify_transposes(source)
@@ -139,6 +131,7 @@ def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
     source = symbolic_math.simplify_boolean_expressions_symmath(source)
     source = fixes.inline_math_comprehensions(source)
     source = symbolic_math.simplify_math_iterators(source)
+    source = fixes.replace_negated_numeric_comparison(source)
     source = performance.optimize_contains_types(source)
     source = performance.remove_redundant_chained_calls(source)
     source = performance.remove_redundant_iter(source)
@@ -169,28 +162,26 @@ def format_code(
     if not source.strip():
         return source
 
-    if parsing.is_valid_python(source):
+    if core.is_valid_python(source):
         minimum_indent = 0
     else:
-        minimum_indent = min(
-            _inspect_indentsize(line) for line in source.splitlines() if line.strip()
-        )
+        minimum_indent = formatting.indentation_level(source)
         source = textwrap.dedent(source)
 
-    if not parsing.is_valid_python(source):
+    if not core.is_valid_python(source):
         logger.debug("Result is not valid python.")
         return source
 
     if safe:
         # Code may not be deleted from module level
-        module = parsing.parse(source)
+        module = core.parse(source)
         def_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         fdef_types = (ast.FunctionDef, ast.AsyncFunctionDef)
-        defs = {node.name for node in parsing.filter_nodes(module.body, def_types)}
+        defs = {node.name for node in core.filter_nodes(module.body, def_types)}
         class_funcs = {  # Function definitions directly under a class definition in module scope
             f"{node.name}.{funcdef.name}"
-            for node in parsing.filter_nodes(module.body, ast.ClassDef)
-            for funcdef in parsing.filter_nodes(node.body, fdef_types)
+            for node in core.filter_nodes(module.body, ast.ClassDef)
+            for funcdef in core.filter_nodes(node.body, fdef_types)
         }
         assignments = {node.id for node in parsing.iter_assignments(module)}
         preserve = set(preserve) | defs | class_funcs | assignments
@@ -265,7 +256,7 @@ def format_file(
     source = format_code(initial_content, preserve=preserve, safe=safe, keep_imports=keep_imports)
 
     if source != initial_content and (
-        parsing.is_valid_python(source) or not parsing.is_valid_python(initial_content)
+        core.is_valid_python(source) or not core.is_valid_python(initial_content)
     ):
         with open(filename, "w", encoding="utf-8") as stream:
             stream.write(source)
@@ -311,9 +302,9 @@ def main(args: Sequence[str] | None = None) -> int:
     for filename in _iter_python_files(args.preserve):
         with open(filename, "r", encoding="utf-8") as stream:
             source = stream.read()
-        ast_root = parsing.parse(source)
+        ast_root = core.parse(source)
         imported_names = tracing.get_imported_names(ast_root)
-        for node in parsing.walk(ast_root, (ast.Name, ast.Attribute)):
+        for node in core.walk(ast_root, (ast.Name, ast.Attribute)):
             if isinstance(node, ast.Name) and node.id in imported_names:
                 used_names[_namespace_name(filename)].add(node.id)
             elif (
