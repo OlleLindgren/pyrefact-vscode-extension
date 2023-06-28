@@ -5,6 +5,8 @@ import collections
 import copy
 import itertools
 import re
+import textwrap
+from pathlib import Path
 from typing import Collection, Iterable, List, Literal, Mapping, Sequence, Tuple
 
 import rmspace
@@ -476,15 +478,19 @@ def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
         subscopes.append(getattr(scope, "finalbody", []))
 
     for node in itertools.chain.from_iterable(subscopes):
-        max_node_line_length = max(
-            child.end_col_offset for child in core.walk(node, ast.AST(end_col_offset=int))
-        )
-        if node in formatted_nodes or max_node_line_length <= max_line_length:
+        if node in formatted_nodes:
             continue
 
-        start, end = core.get_charnos(node, source, keep_first_indent=True)
+        source_range = core.get_charnos(node, source, keep_first_indent=True)
+        if any(source_range & r for r in formatted_ranges):
+            continue
 
-        current_code = source[start:end]
+        current_code = source[source_range.start : source_range.end]
+
+        indent = formatting.indentation_level(current_code)
+        if indent > 0:
+            current_code = textwrap.dedent(current_code)
+
         elif_pattern = r"(\A[\s\n]*)(el)(if)"
         if_pattern = r"(\A[\s\n]*)(if)"
         elif_matches = list(re.finditer(elif_pattern, current_code))
@@ -492,22 +498,22 @@ def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
             # Convert elif to if
             current_code = re.sub(elif_pattern, r"\g<1>\g<3>", current_code, 1)
             new_code = formatting.format_with_black(
-                current_code, line_length=max(60, max_line_length)
+                current_code, line_length=max(60, max_line_length - indent)
             )
             # Convert if to elif
             new_code = re.sub(if_pattern, r"\g<1>el\g<2>", new_code, 1)
         else:
             new_code = formatting.format_with_black(
-                current_code, line_length=max(60, max_line_length)
+                current_code, line_length=max(60, max_line_length - indent)
             )
 
+        if indent > 0:
+            new_code = textwrap.indent(new_code, " " * indent)
+
         new_code = formatting.collapse_trailing_parentheses(new_code)
-        formatted_range = core.Range(start, end)
-        if new_code != formatting.collapse_trailing_parentheses(current_code) and (
-            not any(rng & formatted_range for rng in formatted_ranges)
-        ):
-            yield formatted_range, new_code
-            formatted_ranges.add(formatted_range)
+        if new_code != formatting.collapse_trailing_parentheses(current_code):
+            yield source_range, new_code
+            formatted_ranges.add(source_range)
 
 
 def align_variable_names_with_convention(
@@ -807,8 +813,7 @@ def delete_unused_functions_and_classes(
         funcdef
         for node in core.walk(root, ast.ClassDef)
         for funcdef in core.filter_nodes(node.body, (ast.FunctionDef, ast.AsyncFunctionDef))
-        if f"{node.name}.{funcdef.name}" in preserve
-        or node.bases
+        if f"{node.name}.{funcdef.name}" in preserve or node.bases
     }
 
     for node in core.walk(root, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1467,8 +1472,7 @@ def replace_for_loops_with_dict_comp(source: str) -> str:
 @processing.fix
 def replace_for_loops_with_set_list_comp(source: str) -> str:
     assign_template = ast.Assign(
-        value=core.Wildcard("value", object),
-        targets=[ast.Name(id=core.Wildcard("target", str))],
+        value=core.Wildcard("value", object), targets=[ast.Name(id=core.Wildcard("target", str))]
     )
     for_template = ast.For(body=[object])
     if_template = ast.If(body=[object], orelse=[])
@@ -1509,13 +1513,9 @@ def replace_for_loops_with_set_list_comp(source: str) -> str:
         augass_template = ast.AugAssign(op=(ast.Add, ast.Sub), target=ast.Name(id=target))
 
         if template_match := core.match_template(body_node, target_alter_template):
-            if core.match_template(value, list_init_template) and (
-                template_match.attr == "append"
-            ):
+            if core.match_template(value, list_init_template) and (template_match.attr == "append"):
                 comp_type = ast.ListComp
-            elif core.match_template(value, set_init_template) and (
-                template_match.attr == "add"
-            ):
+            elif core.match_template(value, set_init_template) and (template_match.attr == "add"):
                 comp_type = ast.SetComp
             else:
                 continue
@@ -1707,9 +1707,7 @@ def remove_dead_ifs(source: str) -> str:
             pre_else = source[:node_start]
             start_offset = len(pre_else) - len(pre_else.rstrip())
 
-            yield core.Range(
-                node_start - start_offset, node_end
-            ), "\n\n" + modified_body + "\n\n"
+            yield core.Range(node_start - start_offset, node_end), "\n\n" + modified_body + "\n\n"
 
     for node in core.walk(root, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
         generators = []
@@ -1824,6 +1822,16 @@ def delete_commented_code(source: str) -> str:
 
                 if not (uncommented_block.strip() and core.is_valid_python(uncommented_block)):
                     continue
+                any_line_is_a_path = False
+                for line in filter(None, map(str.strip, uncommented_block.splitlines())):
+                    try:
+                        any_line_is_a_path |= Path(line).exists()
+                    except OSError:
+                        # Raised if a ling was too long. Which also means it's not a path.
+                        pass
+
+                if any_line_is_a_path:
+                    continue
 
                 parsed_content = core.parse(uncommented_block)
                 if (
@@ -1837,10 +1845,11 @@ def delete_commented_code(source: str) -> str:
                     continue
 
                 # Magic comments should not be removed
-                if any(
-                    core.filter_nodes(parsed_content.body, ast.Expr(value=ast.Name(id="noqa")))
-                ):
+                if any(core.filter_nodes(parsed_content.body, ast.Expr(value=ast.Name))):
                     continue
+                if any(core.filter_nodes(parsed_content.body, ast.NamedExpr(target=ast.Name))):
+                    continue
+
                 if any(
                     name.id in {"pylint", "mypy", "flake8", "noqa", "type"}
                     for annassign in core.walk(parsed_content, ast.AnnAssign)
@@ -1980,9 +1989,7 @@ def implicit_defaultdict(source: str) -> str:
                 continue
 
             subscript_calls.add(t_call)
-            if core.match_template(f_value, ast.List(elts=[])) and (
-                t_call in {"append", "extend"}
-            ):
+            if core.match_template(f_value, ast.List(elts=[])) and (t_call in {"append", "extend"}):
                 loop_removals.add(condition)
                 continue
             if core.match_template(f_value, ast.Call(func=ast.Name(id="set"), args=[])) and (
@@ -2019,9 +2026,7 @@ def implicit_defaultdict(source: str) -> str:
             subscript_calls.add(t_call)
             if (
                 t_call in {"add", "append"}
-                and core.match_template(
-                    f_value, (ast.List(elts=[object]), ast.Set(elts=[object]))
-                )
+                and core.match_template(f_value, (ast.List(elts=[object]), ast.Set(elts=[object])))
                 and (core.unparse(t_value) == core.unparse(f_value.elts[0]))
             ):
                 if isinstance(f_value, ast.List) == (t_call == "append"):
@@ -2031,9 +2036,10 @@ def implicit_defaultdict(source: str) -> str:
                 break
             t_value_preferred = _preferred_comprehension_type(t_value)
             f_value_preferred = _preferred_comprehension_type(f_value)
-            if core.unparse(t_value_preferred) == core.unparse(
-                f_value_preferred
-            ) and t_call in {"update", "extend"}:
+            if core.unparse(t_value_preferred) == core.unparse(f_value_preferred) and t_call in {
+                "update",
+                "extend",
+            }:
                 loop_replacements[condition] = on_true
                 continue
 
@@ -2283,7 +2289,7 @@ def invalid_escape_sequence(source: str) -> str:
             yield node, "r" + code
 
 
-@processing.fix
+@processing.fix(restart_on_replace=True)
 def replace_filter_lambda_with_comp(source: str) -> str:
     """Replace filter(lambda ..., iterable) with equivalent list comprehension
 
@@ -2318,7 +2324,7 @@ def replace_filter_lambda_with_comp(source: str) -> str:
         yield replacement_range, replacement
 
 
-@processing.fix
+@processing.fix(restart_on_replace=True)
 def replace_map_lambda_with_comp(source: str) -> str:
     """Replace map(lambda ..., iterable) with equivalent list comprehension
 
@@ -2346,9 +2352,7 @@ def replace_map_lambda_with_comp(source: str) -> str:
 @processing.fix
 def replace_negated_numeric_comparison(source: str) -> str:
     root = core.parse(source)
-    template = core.compile_template(
-        "not {{compare}}", compare=ast.Compare(comparators=[object])
-    )
+    template = core.compile_template("not {{compare}}", compare=ast.Compare(comparators=[object]))
 
     numeric_template = ast.Constant(value=(int, float))
     numeric_template = (
@@ -2645,12 +2649,12 @@ def simplify_collection_unpacks(source: str) -> str:
             )):
                 elts.extend(elt.value.elts)
                 replacements = True
-            elif (  # Can't have a dict in a set, but you can have a dict's keys
-                core.match_template(elt, ast.Starred(value=(ast.Dict)))
-                and (
-                    (isinstance(node, ast.Set) and None not in elt.value.keys)
-                    or len(elt.value.values) <= 1
-            )):
+            elif core.match_template(  # Can't have a dict in a set, but you can have a dict's keys
+                elt, ast.Starred(value=(ast.Dict))
+            ) and (
+                (isinstance(node, ast.Set) and None not in elt.value.keys)
+                or len(elt.value.values) <= 1
+            ):
                 elts.extend(elt.value.keys)
                 replacements = True
             else:
@@ -2712,10 +2716,7 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
     )
     modify_template = ast.Expr(
         value=ast.Call(
-            func=ast.Attribute(
-                value=target_template,
-                attr=("add", "update", "append", "extend"),
-            ),
+            func=ast.Attribute(value=target_template, attr=("add", "update", "append", "extend")),
             keywords=[],
     ))
     template = [assign_template, modify_template]
@@ -2843,9 +2844,7 @@ def deinterpolate_logging_args(source: str) -> str:
     })
     fmtstring_template = ast.Call(func=ast.Attribute(value=ast.Constant(value=str), attr="format"))
     for node, function_name in core.walk_wildcard(root, template):
-        if function_name == "log" and core.match_template(
-            node.args, [object, fmtstring_template]
-        ):
+        if function_name == "log" and core.match_template(node.args, [object, fmtstring_template]):
             yield node, ast.Call(
                 func=node.func,
                 args=[node.args[0], node.args[1].func.value] + node.args[1].args,
@@ -2890,9 +2889,7 @@ def _keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
 
     for node, target, value in core.walk_wildcard(root, template):
         subscript_template = core.compile_template(
-            "{{value}}[{{target}}]",
-            value=value,
-            target=target,
+            "{{value}}[{{target}}]", value=value, target=target
         )
         value_target_subscripts = list(
             core.walk(
@@ -2968,9 +2965,7 @@ def _for_keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
     ),)
     for node, target, value in core.walk_wildcard(root, template):
         subscript_template = core.compile_template(
-            "{{value}}[{{target}}]",
-            value=value,
-            target=target,
+            "{{value}}[{{target}}]", value=value, target=target
         )
         value_target_subscripts = list(
             core.walk(
@@ -3238,36 +3233,55 @@ def missing_context_manager(source: str) -> str:
     return source
 
 
+def _group_statements_of_type(root: ast.AST, template: ast.AST) -> Sequence[Sequence[ast.AST]]:
+    """Get unique groups of imports, such that they're as long as possible, and don't overlap."""
+    groups = [
+        [m[0] for m in matches]
+        for matches in core.walk_sequence(
+            root, template, expand_first=True, expand_last=True
+    )]
+    node_groups = collections.defaultdict(list)
+    for group in groups:
+        for node in group:
+            node_groups[node].append(group)
+    node_groups = {node: max(node_groups, key=len) for node, node_groups in node_groups.items()}
+    groups = {id(group): group for group in node_groups.values()}.values()
+    groups = sorted(groups, key=lambda group: min(n.lineno for n in group))
+
+    return groups
+
+
 def _fix_duplicate_from_imports(source: str) -> str:
     """Remove duplicate from-style imports from the same module."""
     root = core.parse(source)
 
-    module_import_aliases = collections.defaultdict(set)
-    module_import_nodes = collections.defaultdict(list)
-
-    for node in core.walk(root, ast.ImportFrom):
-        module_import_aliases[node.module].update(
-            (alias.name, alias.asname if alias.asname != alias.name else None)
-            for alias in node.names
-        )
-        module_import_nodes[node.module].append(node)
-
     replacements = {}
     removals = set()
-    for module, import_nodes in module_import_nodes.items():
-        if len(import_nodes) > 1:
-            replacements[import_nodes[0]] = ast.ImportFrom(
-                module=module,
-                names=[
-                    ast.alias(name=name, asname=asname)
-                    for name, asname in sorted(
-                        module_import_aliases[module], key=lambda t: (t[0], t[1] is not None, t[1])
-                )],
-                level=import_nodes[0].level,
-            )
-            removals.update(import_nodes[1:])
+    for group in _group_statements_of_type(root, ast.ImportFrom):
+        module_import_aliases = collections.defaultdict(set)
+        module_import_nodes = collections.defaultdict(list)
 
-    if replacements:
+        for node in group:
+            module_import_aliases[node.module].update(
+                (alias.name, alias.asname if alias.asname != alias.name else None)
+                for alias in node.names
+            )
+            module_import_nodes[node.module].append(node)
+
+        for module, import_nodes in module_import_nodes.items():
+            if len(import_nodes) > 1:
+                replacements[import_nodes[0]] = ast.ImportFrom(
+                    module=module,
+                    names=[
+                        ast.alias(name=name, asname=asname)
+                        for name, asname in sorted(
+                            module_import_aliases[module], key=lambda t: (t[0], t[1] is not None, t[1])
+                    )],
+                    level=import_nodes[0].level,
+                )
+                removals.update(import_nodes[1:])
+
+    if replacements or removals:
         source = processing.alter_code(source, root, replacements=replacements, removals=removals)
         return _fix_duplicate_regular_imports(source)
 
@@ -3421,24 +3435,8 @@ def _import_group_key(node: ast.Import | ast.ImportFrom) -> Tuple[int, int]:
 
 def _sort_import_statements(source: str) -> str:
     root = core.parse(source)
-
-    # Get unique groups of imports, such that they're as long as possible, and don't overlap.
-    groups = [
-        [m[0] for m in matches]
-        for matches in core.walk_sequence(
-            root, (ast.Import, ast.ImportFrom), expand_first=True, expand_last=True
-    )]
-    node_groups = collections.defaultdict(list)
-    for group in groups:
-        for node in group:
-            node_groups[node].append(group)
-    node_groups = {node: max(node_groups, key=len) for node, node_groups in node_groups.items()}
-    groups = {id(group): group for group in node_groups.values()}.values()
-    groups = sorted(groups, key=lambda group: min(n.lineno for n in group))
-
-    # Sort each group.
     replacements = {}
-    for nodes in groups:
+    for nodes in _group_statements_of_type(root, (ast.Import, ast.ImportFrom)):
         if len(nodes) < 2 or set(nodes) & replacements.keys():
             continue
 

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import ast
 import collections
+import difflib
 import functools
 import heapq
 import re
 import textwrap
 from types import MappingProxyType
-from typing import Callable, Collection, Iterable, Literal, Mapping, NamedTuple, Sequence
+from typing import Callable, Collection, Iterable, Literal, Mapping, NamedTuple, Sequence, Tuple
 
 from pyrefact import core, formatting, logs as logger
 
@@ -17,9 +18,32 @@ MSG_INFO_REPLACE = """{fix_function_name:<40}: Replacing code:
 * -> *****************
 {new_code}
 **********************"""
+MSG_ERROR_REPLACE = """{fix_function_name:<40}: Failed to replace code:
+{old_code}
+* -> *****************
+{new_code}
+**********************"""
 MSG_INFO_REMOVE = """{fix_function_name:<40}: Removing code:
 {old_code}
 **********************"""
+MSG_ERROR_REMOVE = """{fix_function_name:<40}: Failed to remove code:
+{old_code}
+**********************"""
+
+
+def _log_replacement(old: str, new: str | None, fix_function_name: str, valid: bool) -> None:
+    if new and valid:
+        logger.info(
+            MSG_INFO_REPLACE, fix_function_name=fix_function_name, old_code=old, new_code=new
+        )
+    elif new and not valid:
+        logger.error(
+            MSG_ERROR_REPLACE, fix_function_name=fix_function_name, old_code=old, new_code=new
+        )
+    elif not new and valid:
+        logger.info(MSG_INFO_REMOVE, fix_function_name=fix_function_name, old_code=old)
+    elif not new and not valid:
+        logger.error(MSG_ERROR_REMOVE, fix_function_name=fix_function_name, old_code=old)
 
 
 class _Rewrite(NamedTuple):
@@ -195,6 +219,49 @@ def _sources_equivalent(source1: str, source2: ast.AST) -> bool:
     return _asts_equal(core.parse(source1), core.parse(source2))
 
 
+def _minimize_whitespace_line_differences(source: str, new_source: str) -> Tuple[str, str, str]:
+    old_lines = source.splitlines(keepends=True)
+    new_lines = new_source.splitlines(keepends=True)
+
+    differ = difflib.Differ()
+    diffs = list(differ.compare(old_lines, new_lines))
+
+    segments = []
+    # Iterate through the differences
+    for identifier, _, *line in diffs:
+        line = "".join(line)
+        if not segments:
+            segments.append((identifier, [line]))
+        elif segments[-1][0] == identifier:
+            segments[-1][1].append(line)
+        else:
+            segments.append((identifier, [line]))
+
+    new_lines = []
+    for identifier, lines in segments:
+        if identifier == " ":  # Present in both
+            new_lines.extend(lines)
+        elif identifier == "+" and "".join(lines).strip():  # Present in new, not only whitespace
+            new_lines.extend(lines)
+        elif identifier == "-" and not "".join(lines).strip():  # Present in old, only whitespace
+            new_lines.extend(lines)
+
+    new_source = "".join(new_lines)
+
+    while old_lines and new_lines and old_lines[0] == new_lines[0]:
+        old_lines.pop(0)
+        new_lines.pop(0)
+
+    while old_lines and new_lines and old_lines[-1] == new_lines[-1]:
+        old_lines.pop()
+        new_lines.pop()
+
+    found = "".join(old_lines)
+    replaced = "".join(new_lines)
+
+    return new_source, found, replaced
+
+
 def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") -> str:
     old, new = rewrite
     start, end = _get_charnos(rewrite, source)
@@ -203,6 +270,7 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         new_code = new
         if new_code == code:
             return source
+
     elif isinstance(new, ast.AST):
         new_code = core.unparse(new)
     else:
@@ -215,11 +283,24 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         if new_code_lines == code_lines:
             return source
 
-        new_code = source[: old.start] + new_code + source[old.end :]
-        logger.debug(
-            MSG_INFO_REPLACE, fix_function_name=fix_function_name, old_code=code, new_code=new_code
-        )
-        return new_code
+        candidate = source[: old.start] + new_code + source[old.end :]
+        if new_code or core.is_valid_python(candidate):
+            choice = candidate
+        else:
+            pass_candidate = source[: old.start] + "pass" + source[old.end :]
+            if core.is_valid_python(pass_candidate):
+                choice = pass_candidate
+            else:
+                choice = candidate
+
+        new_source, old, new = _minimize_whitespace_line_differences(source, choice)
+        valid = core.is_valid_python(new_source)
+        _log_replacement(old, new, fix_function_name, valid)
+
+        if not core.is_valid_python(new_source):
+            return source
+
+        return new_source
 
     lines = new_code.splitlines(keepends=True)
     indent = getattr(old, "col_offset", getattr(new, "col_offset", 0))
@@ -243,21 +324,27 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         f"{' ' * indents[i]}{code}".rstrip() + ("\n" if code.endswith("\n") else "")
         for i, code in enumerate(lines)
     )
-    if new_code:
-        logger.debug(
-            MSG_INFO_REPLACE, fix_function_name=fix_function_name, old_code=code, new_code=new_code
-        )
-    else:
-        logger.debug(MSG_INFO_REMOVE, fix_function_name=fix_function_name, old_code=code)
 
     candidate = source[:start] + new_code + source[end:]
 
     if new_code.strip() and isinstance(old, ast.GeneratorExp):
         candidate_parenthesized = source[:start] + "(" + new_code + ")" + source[end:]
         if not _sources_equivalent(candidate, candidate_parenthesized):
-            return candidate_parenthesized
+            candidate = candidate_parenthesized
 
-    return candidate
+    elif not new_code.strip() and not core.is_valid_python(candidate):
+        pass_candidate = source[:start] + "pass" + source[end:]
+        if core.is_valid_python(pass_candidate):
+            candidate = pass_candidate
+
+    new_source, old, new = _minimize_whitespace_line_differences(source, candidate)
+    valid = core.is_valid_python(new_source)
+    _log_replacement(old, new, fix_function_name, valid)
+
+    if not core.is_valid_python(new_source):
+        return source
+
+    return new_source
 
 
 def replace_nodes(source: str, replacements: Mapping[ast.AST, ast.AST | str]) -> str:
@@ -418,8 +505,8 @@ def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) 
         def wrapper(source, *args, **kwargs):
             # Track rewrite history as an infinite loop guard
             history = set()
-            if restart_on_replace:
-                for _ in range(1000):  # Max 1000 iterations
+            for _ in range(1000):  # Max 1000 iterations
+                if restart_on_replace:
                     try:
                         old, new = next(
                             r for r in func(source, *args, **kwargs) if r not in history
@@ -430,14 +517,27 @@ def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) 
                     except StopIteration:
                         return source
 
-            rewrites = (_Rewrite(old, new or "") for old, new in func(source, *args, **kwargs))
-            if sort_order:
-                rewrites = sorted(
-                    set(rewrites), key=functools.partial(_get_charnos, source=source), reverse=True
-                )
+                    continue
 
-            for rewrite in rewrites:
-                source = _do_rewrite(source, rewrite, fix_function_name=func.__name__)
+                rewrites = (_Rewrite(old, new or "") for old, new in func(source, *args, **kwargs))
+                if sort_order:
+                    rewrites = sorted(
+                        ((_get_charnos(rewrite, source), rewrite) for rewrite in rewrites),
+                        key=lambda tup: tup[0],
+                        reverse=True,
+                    )
+
+                rewritten_ranges = []
+                for rewrite_range, rewrite in rewrites:
+                    if any(rewrite_range & other for other in rewritten_ranges):
+                        logger.debug(
+                            "Found rewrite that overlaps with previous rewrite. Restarting @fix loop."
+                        )
+                        break
+
+                    source = _do_rewrite(source, rewrite, fix_function_name=func.__name__)
+                else:
+                    return source
 
             return source
 
@@ -494,9 +594,8 @@ def find_replace(
                 f,
                 **{
                     **{name.strip("{}"): object for name in re.findall(r"\{\{\w+\}\}", f)},
-                    **templates
-                }
-            )
+                    **templates,
+            },)
             for f in find
         )
     if isinstance(find, tuple) and len(find) == 1:
