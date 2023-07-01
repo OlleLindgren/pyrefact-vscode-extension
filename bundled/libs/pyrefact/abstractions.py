@@ -561,14 +561,14 @@ def overused_constant(source: str, *, root_is_static: bool) -> str:
     additions = set()
 
     i = 0
-    names = {name.id.lower() for name in core.walk(root, ast.Name)}
+    names = {name.id.lower().strip("_") for name in core.walk(root, ast.Name)}
     while f"pyrefact_overused_constant_{i}" in names and i < 10:
         i += 1
 
     if f"pyrefact_overused_constant_{i}" in names:
         return source
 
-    for code, nodes in code_node_mapping.items():
+    for code, nodes in sorted(code_node_mapping.items(), key=lambda t: t[0]):
         if len(nodes) < 5:
             continue
         if len(re.sub(r"\s", "", code)) < 20:
@@ -591,6 +591,8 @@ def overused_constant(source: str, *, root_is_static: bool) -> str:
         assign.col_offset = best_common_scope.body[0].col_offset
         additions.add(assign)
         replacements.update({node: name for node in nodes})
+
+        i += 1
 
     return processing.alter_code(source, root, additions=additions, replacements=replacements)
 

@@ -90,9 +90,9 @@ pygls==1.0.2 \
     --hash=sha256:6d278d29fa6559b0f7a448263c85cb64ec6e9369548b02f1a7944060848b21f9 \
     --hash=sha256:888ed63d1f650b4fc64d603d73d37545386ec533c0caac921aed80f80ea946a4
     # via -r ./requirements.in
-pyrefact==88 \
-    --hash=sha256:04f3ca567a2b09e2a7a0951c56d798fa6289186f3790ca7676a4a55deee08dda \
-    --hash=sha256:6e74c71cebb46205f8fded6fb0f799b7506df81e1db048602f5c7f2c8d275b67
+pyrefact==89 \
+    --hash=sha256:5312217ede02fb550205102bb17d49fb808a6dbb2b6fac5d64599c970f96288a \
+    --hash=sha256:6ae853a0fd2bd7ee5d2eb98ae3e89402f1469512ee1fd85621eee30be0fe4bae
     # via -r ./requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
@@ -114,9 +114,9 @@ typeguard==3.0.2 \
     --hash=sha256:bbe993854385284ab42fd5bd3bee6f6556577ce8b50696d6cb956d704f286c8e \
     --hash=sha256:fee5297fdb28f8e9efcb8142b5ee219e02375509cd77ea9d270b5af826358d5a
     # via pygls
-typing-extensions==4.6.3 \
-    --hash=sha256:88a4153d8505aabbb4e13aacb7c486c2b4a33ca3b3f807914a9b4c844c471c26 \
-    --hash=sha256:d91d5919357fe7f681a9f2b5b4cb2a5f1ef0a1e9f59c4d8ff0d3491e05c0ffd5
+typing-extensions==4.7.0 \
+    --hash=sha256:5d8c9dac95c27d20df12fb1d97b9793ab8b2af8a3a525e68c80e21060c161771 \
+    --hash=sha256:935ccf31549830cda708b42289d44b6f74084d616a00be651601a4f968e77c82
     # via
     #   black
     #   cattrs
