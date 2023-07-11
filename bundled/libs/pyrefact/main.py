@@ -13,6 +13,8 @@ import textwrap
 from pathlib import Path
 from typing import Collection, Iterable, Sequence
 
+import rmspace
+
 from pyrefact import abstractions, fixes
 from pyrefact import logs as logger
 from pyrefact import (
@@ -23,6 +25,7 @@ from pyrefact import (
     performance,
     performance_numpy,
     performance_pandas,
+    processing,
     symbolic_math,
     tracing,
 )
@@ -56,11 +59,13 @@ def _single_run_fixes(source: str) -> str:
     Returns:
         str: Modified code
     """
-    source = fixes.deinterpolate_logging_args(source)
-    source = fixes.invalid_escape_sequence(source)
-    source = tracing.fix_starred_imports(source)
-    source = tracing.fix_reimported_names(source)
-    return source
+    chain = processing.chain((
+        fixes.deinterpolate_logging_args,
+        fixes.invalid_escape_sequence,
+        tracing.fix_starred_imports,
+        tracing.fix_reimported_names,
+    ))
+    return chain(source)
 
 
 def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
@@ -111,6 +116,8 @@ def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
     source = performance_pandas.replace_iterrows_index(source)
     source = performance_pandas.replace_iterrows_itertuples(source)
     source = fixes.replace_for_loops_with_set_list_comp(source)
+    source = fixes.replace_setcomp_add_with_union(source)
+    source = fixes.replace_listcomp_append_with_plus(source)
     source = fixes.replace_for_loops_with_dict_comp(source)
     source = fixes.implicit_dict_keys_values_items(source)
     source = fixes.replace_dict_assign_with_dict_literal(source)
@@ -157,8 +164,8 @@ def format_code(
     if re.findall(r"# pyrefact: skip_file", source):
         return source
 
-    source = fixes.fix_tabs(source)
-    source = fixes.fix_rmspace(source)
+    source = source.expandtabs(4)
+    source = rmspace.format_str(source)
     source = fixes.fix_too_many_blank_lines(source)
 
     if not source.strip():
@@ -231,7 +238,7 @@ def format_code(
     source = fixes.sort_imports(source)
 
     source = fixes.fix_line_lengths(source)
-    source = fixes.fix_rmspace(source)
+    source = rmspace.format_str(source)
 
     if minimum_indent > 0:
         source = textwrap.indent(source, " " * minimum_indent)

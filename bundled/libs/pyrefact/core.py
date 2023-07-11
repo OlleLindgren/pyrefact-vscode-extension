@@ -8,7 +8,7 @@ import itertools
 import re
 import textwrap
 import traceback
-from typing import Collection, Iterable, Mapping, NamedTuple, Sequence, Set, Tuple
+from typing import Collection, Iterable, List, Mapping, NamedTuple, Sequence, Set, Tuple
 
 from pyrefact import constants, formatting, logs as logger
 
@@ -120,6 +120,70 @@ def merge_matches(root: ast.AST, matches: Iterable[Tuple[object]]) -> Tuple[obje
     return namedtuple_type(*(namedtuple_vars[field] for field in fields))
 
 
+def _match_tuple(node: ast.AST, template: Tuple[ast.AST, ...], ignore: Collection[str]) -> Tuple:
+    for child in template:
+        if match := match_template(node, child, ignore=ignore):
+            return match
+
+    return ()
+
+
+def _match_set(node: ast.AST, template: Set[ast.AST], ignore: Collection[str]) -> Tuple:
+    if not isinstance(node, list):
+        return ()
+
+    matches = (match_template(node_child, tuple(template), ignore=ignore) for node_child in node)
+    return merge_matches(node, matches)
+
+
+def _match_list(node: ast.AST, template: List[ast.AST], ignore: Collection[str]) -> Tuple:
+    if not isinstance(node, list):
+        return ()
+    if len(node) != len(template):
+        return ()
+
+    matches = (
+        match_template(child, template_child, ignore=ignore)
+        for child, template_child in zip(node, template)
+    )
+    return merge_matches(node, matches)
+
+
+def _match_wildcard(node: ast.AST, template: Wildcard, ignore: Collection[str]) -> Tuple:
+    namedtuple_type = _make_match_type((template.name,))
+    template_match = match_template(node, template.template, ignore=ignore)
+    return namedtuple_type(template_match[0]) if len(template_match) == 1 else ()
+
+
+def _match_template_vars(
+    node: ast.AST,
+    template: ast.AST,
+    ignore: Collection[str] = frozenset(("lineno", "end_lineno", "col_offset", "end_col_offset")),
+) -> Tuple:
+    t_vars = vars(template)
+    n_vars = vars(node)
+
+    for k in t_vars:
+        if k in ignore:
+            continue
+        if k not in n_vars:
+            return ()
+
+    matches = (
+        match_template(n_vars[key], t_vars[key], ignore=ignore) for key in t_vars.keys() - ignore
+    )
+    return merge_matches(node, matches)
+
+
+@functools.lru_cache(maxsize=10000)
+def _issubclas_cache(obj: type, types: type | Tuple[type, ...]) -> bool:
+    return issubclass(obj, types)
+
+
+def _isinstance_cache(obj: object, types: type | Tuple[type, ...]) -> bool:
+    return _issubclas_cache(type(obj), types)
+
+
 def match_template(
     node: ast.AST,
     template: ast.AST,
@@ -162,76 +226,46 @@ def match_template(
     # A type indicates that the node should be an instance of that type,
     # and nothing else. A tuple indicates that the node should be any of
     # the types in it.
-
-    if isinstance(template, type):
-        return (node,) if isinstance(node, template) else ()
+    if _isinstance_cache(template, type):
+        return (node,) if _isinstance_cache(node, template) else ()
 
     # A tuple indicates an or condition; the node must comply with any of
     # the templates in the child.
     # They may all be types for example, which boils down to the traditional
     # isinstance logic.
     # If there are wildcards, the first match is chosen.
-    if isinstance(template, tuple):
-        for child in template:
-            if match := match_template(node, child, ignore=ignore):
-                return match
-        return ()
+    if _isinstance_cache(template, tuple):
+        return _match_tuple(node, template, ignore)
 
     # A set indicates a variable length list, where all elements must match
     # against at least one of the templates in it.
     # If there are wildcards, the first match is chosen.
     # If there are inconsistencies between different elements, the match is discarded.
-    if isinstance(template, set):
-        if not isinstance(node, list):
-            return ()
-        matches = (
-            match_template(node_child, tuple(template), ignore=ignore) for node_child in node
-        )
+    if _isinstance_cache(template, set):
+        return _match_set(node, template, ignore)
 
-        return merge_matches(node, matches)
     # A list indicates that the node must also be a list, and for every
     # element, it must match against the corresponding node in the template.
     # It must also be equal length.
-    if isinstance(template, list):
-        if isinstance(node, list) and len(node) == len(template):
-            matches = (
-                match_template(child, template_child, ignore=ignore)
-                for child, template_child in zip(node, template)
-            )
-
-            return merge_matches(node, matches)
-
-        return ()
+    if _isinstance_cache(template, list):
+        return _match_list(node, template, ignore)
 
     if template is True or template is False or template is None:
         return (node,) if node is template else ()
 
-    if isinstance(template, Wildcard):
-        namedtuple_type = _make_match_type((template.name,))
-        template_match = match_template(node, template.template, ignore=ignore)
-        return namedtuple_type(template_match[0]) if len(template_match) == 1 else ()
+    if _isinstance_cache(template, Wildcard):
+        return _match_wildcard(node, template, ignore)
 
-    # If the node is not an ast, we presume it is a string or something like
-    # that, and just assert it should be equal.
-    if not isinstance(node, ast.AST):
-        return (node,) if node == template else ()
+    if _isinstance_cache(template, ast.AST):
+        if isinstance(node, type(template)):
+            return _match_template_vars(node, template, ignore=ignore)
 
-    if not isinstance(node, type(template)):
         return ()
 
-    t_vars = vars(template)
-    n_vars = vars(node)
+    if node == template:
+        return (node,)
 
-    for k in t_vars:
-        if k in ignore:
-            continue
-        if k not in n_vars:
-            return ()
-
-    matches = (
-        match_template(n_vars[key], t_vars[key], ignore=ignore) for key in t_vars.keys() - ignore
-    )
-    return merge_matches(node, matches)
+    return ()
 
 
 @functools.lru_cache(maxsize=100)
@@ -543,13 +577,11 @@ def has_side_effect(node: ast.AST, safe_callable_whitelist: Collection[str] = fr
         return any(has_side_effect(item, safe_callable_whitelist) for item in node.generators)
 
     if isinstance(node, ast.comprehension):
-        if (
+        return not (
             isinstance(node.target, ast.Name)
-            and not has_side_effect(node.iter, safe_callable_whitelist)
-            and not any(has_side_effect(value, safe_callable_whitelist) for value in node.ifs)
-        ):
-            return False
-        return True
+            and (not has_side_effect(node.iter, safe_callable_whitelist))
+            and (not any((has_side_effect(value, safe_callable_whitelist) for value in node.ifs)))
+        )
 
     if isinstance(node, ast.Call):
         return (
@@ -642,6 +674,9 @@ def get_charnos(node: ast.AST, source: str, keep_first_indent: bool = False) -> 
         start = node
 
     start_charno = line_start_charnos[start.lineno - 1] + start.col_offset
+    if getattr(node, "end_lineno", None) is None:
+        return Range(start_charno, start_charno)
+
     end_charno = line_start_charnos[node.end_lineno - 1] + node.end_col_offset
 
     code = source[start_charno:end_charno]
@@ -671,7 +706,7 @@ def get_charnos(node: ast.AST, source: str, keep_first_indent: bool = False) -> 
     return Range(start_charno, end_charno)
 
 
-def get_code(node: ast.AST, source: str) -> str:
+def get_code(node: ast.AST | Range, source: str) -> str:
     """Get python code from ast
 
     Args:
@@ -682,6 +717,9 @@ def get_code(node: ast.AST, source: str) -> str:
         str: Python source code
 
     """
+    if isinstance(node, Range):
+        return source[node.start : node.end]
+
     start_charno, end_charno = get_charnos(node, source)
     return source[start_charno:end_charno]
 

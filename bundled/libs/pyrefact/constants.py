@@ -5,7 +5,6 @@ import operator
 import pathlib
 import sys
 import types
-
 import typing
 from types import MappingProxyType
 
@@ -285,6 +284,8 @@ PYTHON_311_STDLIB = frozenset((
     "telnetlib",
     "uu",
     "xdrlib",
+    "pstats",
+    "cProfile",
 ))
 
 BUILTIN_FUNCTIONS = frozenset(name for name in dir(builtins) if name != "_")
@@ -430,7 +431,11 @@ SAFE_CALLABLES = frozenset({
     "vars",
     "zip",
 })
-PYTHON_KEYWORDS = frozenset(keyword.kwlist)
+PYTHON_KEYWORDS = frozenset(
+    keyword.kwlist
+    + getattr(keyword, "softkwlist", [])  # Exists on >= 3.9, but empty on 3.9
+    + ["_", "case", "match", "type"]  # keyword.softkwlist as of 3.12b2
+)
 
 PYTHON_VERSION = tuple(sys.version_info)
 

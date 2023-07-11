@@ -3,33 +3,37 @@ import ast
 from pyrefact import core, processing
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def replace_loc_at_iloc_iat(source: str) -> str:
     yield from processing.find_replace(
         source,
-        find="{{value}}.loc[{{i}}]",
-        replace="{{value}}.at[{{i}}]",
+        "{{value}}.loc[{{i}}]",
+        "{{value}}.at[{{i}}]",
         i=ast.Constant,
+        transaction=0
     )
     yield from processing.find_replace(
         source,
-        find="{{value}}.loc[{{i}}, {{j}}]",
-        replace="{{value}}.at[{{i}}, {{j}}]",
+        "{{value}}.loc[{{i}}, {{j}}]",
+        "{{value}}.at[{{i}}, {{j}}]",
         i=ast.Constant,
         j=ast.Constant,
+        transaction=1
     )
     yield from processing.find_replace(
         source,
-        find="{{value}}.iloc[{{i}}]",
-        replace="{{value}}.iat[{{i}}]",
+        "{{value}}.iloc[{{i}}]",
+        "{{value}}.iat[{{i}}]",
         i=ast.Constant,
+        transaction=2
     )
     yield from processing.find_replace(
         source,
-        find="{{value}}.iloc[{{i}}, {{j}}]",
-        replace="{{value}}.iat[{{i}}, {{j}}]",
+        "{{value}}.iloc[{{i}}, {{j}}]",
+        "{{value}}.iat[{{i}}, {{j}}]",
         i=ast.Constant,
         j=ast.Constant,
+        transaction=3
     )
 
 
@@ -54,6 +58,7 @@ def replace_iterrows_index(source: str) -> str:
         yield node.iter, ast.Attribute(value=underlying_object, attr="index")
 
 
+@processing.fix
 def replace_iterrows_itertuples(source: str) -> str:
     root = core.parse(source)
     replacements = {}
@@ -156,4 +161,5 @@ def replace_iterrows_itertuples(source: str) -> str:
         replacements.update(node_replacements)
     template = ast.comprehension(target=target_template, iter=iter_template)
 
-    return processing.alter_code(source, root, replacements=replacements)
+    for node, replacement in replacements.items():
+        yield node, replacement, 0

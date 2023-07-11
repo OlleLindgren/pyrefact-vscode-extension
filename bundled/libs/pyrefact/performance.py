@@ -38,7 +38,7 @@ def optimize_contains_types(source: str) -> str:
     wrapper_names = ("sorted", "list", "tuple", "set", "iter", "reversed")
     template = core.compile_template(find, wrapper=ast.Name(id=wrapper_names))
 
-    yield from processing.find_replace(source, root, find=template, replace=replace)
+    yield from processing.find_replace(source, template, replace)
 
     sorted_list_tuple_call_template = ast.Call(
         func=ast.Name(id=("sorted", "list", "tuple"), ctx=ast.Load), args=[object], keywords=[]
@@ -78,7 +78,7 @@ def remove_redundant_iter(source: str) -> str:
         yield node.iter, node.iter.args[0]
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def remove_redundant_chained_calls(source: str) -> str:
     root = core.parse(source)
 
@@ -198,57 +198,57 @@ def _wrap_transpose(node: ast.AST) -> ast.Call:
     return ast.Call(func=ast.Name(id="zip"), args=[ast.Starred(value=node)], keywords=[])
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def _replace_subscript_looping_simple_cases(source: str) -> str:
     yield from processing.find_replace(
         source,
-        find="[{{sequence}}[{{index}}] for {{index}} in range(len({{sequence}}))]",
-        replace="list({{sequence}})",
+        "[{{sequence}}[{{index}}] for {{index}} in range(len({{sequence}}))]",
+        "list({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="[{{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}}))]",
-        replace="list({{sequence}})",
+        "[{{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}}))]",
+        "list({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="[{{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0])]",
-        replace="list({{sequence}})",
+        "[{{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0])]",
+        "list({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="[{{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0])]",
-        replace="list({{sequence}})",
+        "[{{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0])]",
+        "list({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="[{{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1])]",
-        replace="list({{sequence}}.T)",
+        "[{{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1])]",
+        "list({{sequence}}.T)",
     )
     yield from processing.find_replace(
         source,
-        find="({{sequence}}[{{index}}] for {{index}} in range(len({{sequence}})))",
-        replace="iter({{sequence}})",
+        "({{sequence}}[{{index}}] for {{index}} in range(len({{sequence}})))",
+        "iter({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="({{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}})))",
-        replace="iter({{sequence}})",
+        "({{sequence}}[{{index}}, :] for {{index}} in range(len({{sequence}})))",
+        "iter({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="({{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0]))",
-        replace="iter({{sequence}})",
+        "({{sequence}}[{{index}}] for {{index}} in range({{sequence}}.shape[0]))",
+        "iter({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="({{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0]))",
-        replace="iter({{sequence}})",
+        "({{sequence}}[{{index}}, :] for {{index}} in range({{sequence}}.shape[0]))",
+        "iter({{sequence}})",
     )
     yield from processing.find_replace(
         source,
-        find="({{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1]))",
-        replace="iter({{sequence}}.T)",
+        "({{sequence}}[:, {{index}}] for {{index}} in range({{sequence}}.shape[1]))",
+        "iter({{sequence}}.T)",
     )
 
 
@@ -307,8 +307,7 @@ def _replace_subscript_looping_complex_cases(source: str) -> str:
             yield node, ast.Name(id=new_index_name)
 
 
+@processing.fix
 def replace_subscript_looping(source: str) -> str:
-    source = _replace_subscript_looping_simple_cases(source)
-    source = _replace_subscript_looping_complex_cases(source)
-
-    return source
+    yield from _replace_subscript_looping_simple_cases._fix_func(source)
+    yield from _replace_subscript_looping_complex_cases._fix_func(source)

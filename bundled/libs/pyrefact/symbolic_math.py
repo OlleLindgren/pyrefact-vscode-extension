@@ -1,6 +1,6 @@
 """Features related to symbolic mathematics."""
-from __future__ import annotations
 
+from __future__ import annotations
 
 import ast
 import collections
@@ -10,7 +10,6 @@ from typing import Callable, Mapping, Sequence, Tuple
 
 import sympy
 import sympy.parsing
-
 from pyrefact import constants, core, processing
 
 
@@ -642,7 +641,7 @@ def simplify_boolean_expressions(source: str) -> str:
             yield node, ast.Constant(value=left <= right, kind=None)
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def simplify_boolean_expressions_symmath(source: str) -> str:
     root = core.parse(source)
     for node in core.walk(root, (ast.BoolOp, ast.UnaryOp)):
@@ -839,5 +838,3 @@ def simplify_constrained_range(source: str) -> str:
             yield comp.iter, ast.Call(
                 func=ast.Name(id="range"), args=[ast.Constant(value=stop, kind=None)], keywords=[]
             )
-
-        return

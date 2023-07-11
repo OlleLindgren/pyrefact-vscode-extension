@@ -8,10 +8,19 @@ import heapq
 import re
 import textwrap
 from types import MappingProxyType
-from typing import Callable, Collection, Iterable, Literal, Mapping, NamedTuple, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Iterable,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Sequence,
+    Tuple,
+)
 
 from pyrefact import core, formatting, logs as logger
-
 
 MSG_INFO_REPLACE = """{fix_function_name:<40}: Replacing code:
 {old_code}
@@ -32,16 +41,16 @@ MSG_ERROR_REMOVE = """{fix_function_name:<40}: Failed to remove code:
 
 
 def _log_replacement(old: str, new: str | None, fix_function_name: str, valid: bool) -> None:
-    if new and valid:
-        logger.info(
+    if new.strip() and valid:
+        logger.debug(
             MSG_INFO_REPLACE, fix_function_name=fix_function_name, old_code=old, new_code=new
         )
-    elif new and not valid:
+    elif new.strip() and not valid:
         logger.error(
             MSG_ERROR_REPLACE, fix_function_name=fix_function_name, old_code=old, new_code=new
         )
     elif not new and valid:
-        logger.info(MSG_INFO_REMOVE, fix_function_name=fix_function_name, old_code=old)
+        logger.debug(MSG_INFO_REMOVE, fix_function_name=fix_function_name, old_code=old)
     elif not new and not valid:
         logger.error(MSG_ERROR_REMOVE, fix_function_name=fix_function_name, old_code=old)
 
@@ -49,6 +58,31 @@ def _log_replacement(old: str, new: str | None, fix_function_name: str, valid: b
 class _Rewrite(NamedTuple):
     old: ast.AST | core.Range  # TODO replace with (start_char, end_char)
     new: ast.AST | str  # "" indicates a removal
+
+    def __hash__(self) -> int:
+        if isinstance(self.old, ast.AST):
+            old_hash = hash((
+                getattr(self.old, "lineno", None),
+                getattr(self.old, "col_offset", None),
+                getattr(self.old, "end_lineno", None),
+                getattr(self.old, "end_col_offset", None),
+                core.unparse(self.old),
+            ))
+        else:
+            old_hash = hash(self.old)
+
+        if isinstance(self.new, ast.AST):
+            new_hash = hash((
+                getattr(self.new, "lineno", None),
+                getattr(self.new, "col_offset", None),
+                getattr(self.new, "end_lineno", None),
+                getattr(self.new, "end_col_offset", None),
+                core.unparse(self.new),
+            ))
+        else:
+            new_hash = hash(self.new)
+
+        return hash((old_hash, new_hash))
 
 
 def _substitute_original_strings(original_source: str, new_source: str) -> str:
@@ -103,7 +137,7 @@ def _substitute_original_strings(original_source: str, new_source: str) -> str:
             )[0][0]
             replacements[node] = most_common_original_formatting
 
-    return replace_nodes(new_source, replacements)
+    return _replace_nodes(new_source, replacements)
 
 
 def _substitute_original_fstrings(original_source: str, new_source: str) -> str:
@@ -147,7 +181,7 @@ def _substitute_original_fstrings(original_source: str, new_source: str) -> str:
             )[0][0]
             replacements[node] = most_common_original_formatting
 
-    return replace_nodes(new_source, replacements)
+    return _replace_nodes(new_source, replacements)
 
 
 def remove_nodes(source: str, nodes: Iterable[ast.AST], root: ast.Module) -> str:
@@ -293,11 +327,24 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
             else:
                 choice = candidate
 
+        if not core.is_valid_python(choice):
+            new_code_lines = new_code.splitlines(keepends=True)
+            for extra_indent in range(0, 16, 4):
+                candidate = (
+                    source[: old.start]
+                    + new_code_lines[0]
+                    + "".join(" " * extra_indent + l for l in new_code_lines[1:])
+                    + source[old.end :]
+                )
+                if core.is_valid_python(candidate):
+                    choice = candidate
+                    break
+
         new_source, old, new = _minimize_whitespace_line_differences(source, choice)
         valid = core.is_valid_python(new_source)
         _log_replacement(old, new, fix_function_name, valid)
 
-        if not core.is_valid_python(new_source):
+        if not valid:
             return source
 
         return new_source
@@ -341,13 +388,13 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
     valid = core.is_valid_python(new_source)
     _log_replacement(old, new, fix_function_name, valid)
 
-    if not core.is_valid_python(new_source):
+    if not valid:
         return source
 
     return new_source
 
 
-def replace_nodes(source: str, replacements: Mapping[ast.AST, ast.AST | str]) -> str:
+def _replace_nodes(source: str, replacements: Mapping[ast.AST, ast.AST | str]) -> str:
     rewrites = sorted(
         replacements.items(),
         key=lambda tup: (
@@ -365,7 +412,7 @@ def replace_nodes(source: str, replacements: Mapping[ast.AST, ast.AST | str]) ->
     return source
 
 
-def insert_nodes(source: str, additions: Collection[ast.AST]) -> str:
+def _insert_nodes(source: str, additions: Collection[ast.AST]) -> str:
     """Insert ast nodes in python source code.
 
     Args:
@@ -388,7 +435,6 @@ def insert_nodes(source: str, additions: Collection[ast.AST]) -> str:
             + ["\n"] * (not addition.endswith("\n"))
             + lines[node.lineno :]
         )
-
     return "".join(lines)
 
 
@@ -464,11 +510,11 @@ def alter_code(
     # a < d => deletions will go before additions if same lineno and reversed sorting.
     for *_, action, _, value in sorted(actions, reverse=True):
         if action == "add":
-            source = insert_nodes(source, [value])
+            source = _insert_nodes(source, [value])
         elif action == "delete":
             source = remove_nodes(source, [value], root)
         elif action == "replace":
-            source = replace_nodes(source, {value[0]: value[1]})
+            source = _replace_nodes(source, {value[0]: value[1]})
         else:
             raise ValueError(f"Invalid action: {action}")
 
@@ -489,58 +535,124 @@ def _get_charnos(obj: _Rewrite, source: str) -> core.Range:
     return core.get_charnos(new, source)
 
 
-def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) -> Callable:
+def _schedule_rewrites(
+    source: str, funcs: Iterable[Tuple[Callable, Sequence, Mapping]]
+) -> Sequence[Tuple[Any, Callable]]:
+    default_transaction = {"count": -100000000}
+
+    def fill_transaction(tup) -> Tuple[ast.AST, ast.AST, int]:
+        default_transaction["count"] += 1
+        if len(tup) == 3:
+            before, after, transaction = tup
+        elif len(tup) == 2:
+            before, after = tup
+            transaction = default_transaction["count"]
+        else:
+            raise ValueError(f"Invalid tuple: {tup!r}")
+
+        if isinstance(before, ast.AST):
+            before = core.get_charnos(before, source)
+        elif before is None:
+            before = core.get_charnos(after, source)
+
+        if after is None:
+            after = ""
+        return (before, after, transaction)
+
+    overlap_error_format = "Discarding transaction {transaction} due to overlapping rewrite ranges: {range} and {other}"
+    duplicate_error_format = "Discarding duplicate transaction {transaction}."
+    scheduled_rewrites = []
+    transaction_rewrites = collections.defaultdict(list)
+    for k, (func, args, kwargs) in enumerate(funcs):
+        for old, new, transaction in map(fill_transaction, func(*args, **kwargs)):
+            transaction_rewrites[k, transaction, func.__name__].append(_Rewrite(old, new or ""))
+
+        seen_transactions = set()
+        duplicate_transaction_keys = []
+        for key in sorted(transaction_rewrites):
+            transaction = tuple(transaction_rewrites[key])
+            if transaction in seen_transactions:
+                duplicate_transaction_keys.append(key)
+
+            seen_transactions.add(transaction)
+
+        for key in duplicate_transaction_keys:
+            logger.error(duplicate_error_format.format(transaction=key))
+            del transaction_rewrites[key]
+
+        for transaction in sorted(transaction_rewrites):
+            if transaction[0] != k:
+                continue
+
+            rewrites = transaction_rewrites[transaction]
+            rewrites = sorted(
+                ((_get_charnos(rewrite, source), rewrite) for rewrite in rewrites),
+                key=lambda tup: tup[0],
+                reverse=True,
+            )
+            conflicting = False
+            for i, (rewrite_range, rewrite) in enumerate(rewrites):
+                for _, (other, _) in rewrites[i + 1 :]:
+                    if rewrite_range & other:
+                        logger.debug(
+                            overlap_error_format.format(
+                                transaction=transaction,
+                                range=tuple(rewrite_range),
+                                other=tuple(other),
+                        ))
+                        conflicting = True
+                        break
+                for _, (other, _) in scheduled_rewrites:
+                    if rewrite_range & other:
+                        logger.debug(
+                            overlap_error_format.format(
+                                transaction=transaction,
+                                range=tuple(rewrite_range),
+                                other=tuple(other),
+                        ))
+                        conflicting = True
+                        break
+                if conflicting:
+                    break
+
+            if not conflicting:
+                scheduled_rewrites.extend(((transaction, r) for r in rewrites))
+    if transaction_rewrites and (not scheduled_rewrites):
+        logger.error("{} transactions found, but all were conflicting.", len(transaction_rewrites))
+
+    scheduled_rewrites.sort(key=lambda tup: (tup[1][0], tup[0]), reverse=True)
+    return scheduled_rewrites
+
+
+def _apply_rewrites(source: str, rewrites: Sequence[Tuple[Any, Callable]]) -> str:
+    for (*_, fix_func_name), (rewrite_range, rewrite) in rewrites:
+        source = _do_rewrite(source, rewrite, fix_function_name=fix_func_name)
+
+    return source
+
+
+def fix(*maybe_func, max_iter: int = 5) -> Callable:
     """Convert an iterator of (before, after) asts to a function that fixes source code.
 
     Args:
         maybe_func (Callable): Function to fix source code. If not provided, this is a decorator.
-        restart_on_replace (bool, optional): If True, restarts the rewrite loop on replacements.
-            This is needed when a replacement may alter the code in a way that makes it hard for
-            the rewriter to properly place the next rewrite. Defaults to False.
-        sort_order (bool, optional): If True, sorts the rewrites by line number and col_offset.
+        max_iter (int, optional): Maximum number of iterations to run the rewrite loop. Defaults to 5.
     """
 
     def fix_decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(source, *args, **kwargs):
-            # Track rewrite history as an infinite loop guard
-            history = set()
-            for _ in range(1000):  # Max 1000 iterations
-                if restart_on_replace:
-                    try:
-                        old, new = next(
-                            r for r in func(source, *args, **kwargs) if r not in history
-                        )
-                        rewrite = _Rewrite(old, new or "")
-                        history.add(rewrite)
-                        source = _do_rewrite(source, rewrite, fix_function_name=func.__name__)
-                    except StopIteration:
-                        return source
+            history = {source}
+            for _ in range(max_iter):
+                scheduled_rewrites = _schedule_rewrites(source, [[func, [source, *args], kwargs]])
+                source = _apply_rewrites(source, scheduled_rewrites)
 
-                    continue
-
-                rewrites = (_Rewrite(old, new or "") for old, new in func(source, *args, **kwargs))
-                if sort_order:
-                    rewrites = sorted(
-                        ((_get_charnos(rewrite, source), rewrite) for rewrite in rewrites),
-                        key=lambda tup: tup[0],
-                        reverse=True,
-                    )
-
-                rewritten_ranges = []
-                for rewrite_range, rewrite in rewrites:
-                    if any(rewrite_range & other for other in rewritten_ranges):
-                        logger.debug(
-                            "Found rewrite that overlaps with previous rewrite. Restarting @fix loop."
-                        )
-                        break
-
-                    source = _do_rewrite(source, rewrite, fix_function_name=func.__name__)
-                else:
-                    return source
+                if source in history:
+                    break
 
             return source
 
+        wrapper._fix_func = func
         return wrapper
 
     if not maybe_func:
@@ -552,15 +664,54 @@ def fix(*maybe_func, restart_on_replace: bool = False, sort_order: bool = True) 
     raise ValueError(f"Exactly 1 or 0 arguments must be given as maybe_func, not {len(maybe_func)}")
 
 
+def _build_chain(source, preserve, fix_funcs) -> Sequence[Tuple[Callable, Sequence, Mapping]]:
+    funcs = []
+    for func in fix_funcs:
+        if hasattr(func, "_fix_func"):
+            func = func._fix_func
+
+        args = [arg for arg in func.__code__.co_varnames if arg in {"source", "preserve"}]
+        if args == ["source"]:
+            funcs.append((func, [source], {}))
+        elif args == ["source", "preserve"]:
+            funcs.append((func, [source], {"preserve": preserve}))
+        else:
+            raise NotImplementedError(
+                f"Cannot chain fix function {func.__name__} with unrecognized args: {args}."
+            )
+
+    return funcs
+
+
+def chain(fix_funcs: Iterable[Callable], max_iter: int = 10) -> Callable:
+    fix_funcs = tuple(fix_funcs)
+
+    def func_chain(source, preserve=frozenset()):
+        history = {source}
+        preserve = frozenset(preserve)
+        for _ in range(max_iter):
+            # Chain must be rebuilt on each iteration, since the source argument will change.
+            funcs = _build_chain(source, preserve, fix_funcs)
+            scheduled_rewrites = _schedule_rewrites(source, funcs)
+            source = _apply_rewrites(source, scheduled_rewrites)
+            if source in history:
+                break
+
+        return source
+
+    return func_chain
+
+
 def find_replace(
     source: str,
-    root: ast.AST = None,
-    *,
     find: str | ast.AST,
     replace: str,
+    *,
+    root: ast.AST = None,
     expand_first: bool = None,
     expand_last: bool = None,
     yield_match: bool = False,
+    transaction: int = None,
     **callables_or_templates,
 ) -> Iterable[core.Range, str]:
     """Swap a find with a replacement.
@@ -629,7 +780,10 @@ def find_replace(
         template_replacement = textwrap.dedent(template_replacement)
         template_replacement = textwrap.indent(template_replacement, " " * indentation)
 
+        item = [replacement_range, template_replacement]
+        if transaction is not None:
+            item.append(transaction)
         if yield_match:
-            yield replacement_range, template_replacement, combined_match
-        else:
-            yield replacement_range, template_replacement
+            item.append(combined_match)
+
+        yield tuple(item)

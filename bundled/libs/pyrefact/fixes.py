@@ -9,8 +9,6 @@ import textwrap
 from pathlib import Path
 from typing import Collection, Iterable, List, Literal, Mapping, Sequence, Tuple
 
-import rmspace
-
 from pyrefact import (
     abstractions,
     constants,
@@ -71,111 +69,6 @@ def _get_uses_of(node: ast.AST, scope: ast.AST, source: str) -> Iterable[ast.Nam
             yield refnode
         elif is_maybe_unordered_scope and n_end < start:
             yield refnode
-
-
-def _get_variable_name_substitutions(
-    ast_tree: ast.AST, source: str, preserve: Collection[str]
-) -> Mapping[ast.AST, str]:
-    renamings = collections.defaultdict(set)
-    classdefs: List[ast.ClassDef] = []
-    funcdefs: List[ast.FunctionDef] = []
-    for node in parsing.iter_classdefs(ast_tree):
-        name = node.name
-        substitute = style.rename_class(
-            name, private=parsing.is_private(name) or name not in preserve
-        )
-        classdefs.append(node)
-        renamings[node].add(substitute)
-        for refnode in _get_uses_of(node, ast_tree, source):
-            renamings[refnode].add(substitute)
-
-    typevars = set()
-    for node in parsing.iter_typedefs(ast_tree):
-        assert len(node.targets) == 1
-        target = node.targets[0]
-        assert isinstance(target, (ast.Name, ast.Attribute))
-        typevars.add(target)
-        for refnode in _get_uses_of(target, ast_tree, source):
-            typevars.add(refnode)
-
-    for node in parsing.iter_funcdefs(ast_tree):
-        name = node.name
-        substitute = style.rename_variable(
-            name, private=parsing.is_private(name) or name not in preserve, static=False
-        )
-        funcdefs.append(node)
-        renamings[node].add(substitute)
-        for refnode in _get_uses_of(node, ast_tree, source):
-            renamings[refnode].add(substitute)
-
-    for node in parsing.iter_assignments(ast_tree):
-        if node in typevars:
-            substitute = style.rename_class(node.id, private=parsing.is_private(node.id))
-        else:
-            substitute = style.rename_variable(
-                node.id, private=parsing.is_private(node.id), static=True
-            )
-        renamings[node].add(substitute)
-        for refnode in _get_uses_of(node, ast_tree, source):
-            renamings[refnode].add(substitute)
-
-    while funcdefs or classdefs:
-        for partial_tree in classdefs.copy():
-            classdefs.remove(partial_tree)
-            for node in parsing.iter_classdefs(partial_tree):
-                name = node.name
-                classdefs.append(node)
-                substitute = style.rename_class(name, private=parsing.is_private(name))
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-            for node in parsing.iter_funcdefs(partial_tree):
-                name = node.name
-                # Don't rename magic members, don't rename if there is inheritance.
-                if partial_tree.bases or parsing.is_magic_method(node):
-                    renamings[node] = {name}
-                funcdefs.append(node)
-                substitute = style.rename_variable(
-                    name, private=parsing.is_private(name), static=False
-                )
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-            for node in parsing.iter_assignments(partial_tree):
-                name = node.id
-                # Don't rename magic members, don't rename if there is inheritance.
-                if partial_tree.bases or (name.startswith("__") and name.endswith("__")):
-                    renamings[node] = {name}
-                substitute = style.rename_variable(
-                    name, private=parsing.is_private(name), static=False
-                )
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-        for partial_tree in funcdefs.copy():
-            funcdefs.remove(partial_tree)
-            for node in parsing.iter_classdefs(partial_tree):
-                name = node.name
-                classdefs.append(node)
-                substitute = style.rename_class(name, private=False)
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-            for node in parsing.iter_funcdefs(partial_tree):
-                name = node.name
-                funcdefs.append(node)
-                substitute = style.rename_variable(name, private=False, static=False)
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-            for node in parsing.iter_assignments(partial_tree):
-                name = node.id
-                substitute = style.rename_variable(name, private=False, static=False)
-                renamings[node].add(substitute)
-                for refnode in _get_uses_of(node, partial_tree, source):
-                    renamings[refnode].add(substitute)
-
-    return renamings
 
 
 def _get_variable_re_pattern(variable) -> str:
@@ -370,43 +263,7 @@ def _construct_import_statement(
     return f"from {'.' * node.level}{node.module or ''} import {names}"
 
 
-def _remove_unused_imports(
-    ast_tree: ast.Module, source: str, unused_imports: Collection[str]
-) -> str:
-    completely_unused_imports, partially_unused_imports = _get_unused_imports_split(
-        ast_tree, unused_imports
-    )
-    if completely_unused_imports:
-        logger.debug("Removing unused imports")
-        source = processing.remove_nodes(source, completely_unused_imports, ast_tree)
-        if not partially_unused_imports:
-            return source
-        ast_tree = core.parse(source)
-        completely_unused_imports, partially_unused_imports = _get_unused_imports_split(
-            ast_tree, unused_imports
-        )
-
-    if completely_unused_imports:
-        raise RuntimeError("Failed to remove unused imports")
-
-    # For every import, construct what we would like it to look like with redundant stuff removed, find the old
-    # version of it, and replace it.
-
-    # Iterate from bottom to top of file, so we don't have to re-calculate the linenos etc.
-    for node in sorted(
-        partially_unused_imports,
-        key=lambda n: (n.lineno, n.col_offset, n.end_lineno, n.end_col_offset),
-        reverse=True,
-    ):
-        start, end = core.get_charnos(node, source)
-        code = source[start:end]
-        replacement = _construct_import_statement(node, unused_imports)
-        logger.debug("Replacing:\n{old}\nWith:\n{new}", old=code, new=replacement)
-        source = source[:start] + replacement + source[end:]
-
-    return source
-
-
+@processing.fix
 def remove_unused_imports(source: str) -> str:
     """Remove unused imports from source code.
 
@@ -416,24 +273,23 @@ def remove_unused_imports(source: str) -> str:
     Returns:
         str: Source code, with added imports removed
     """
-    ast_tree = core.parse(source)
-    unused_imports = _get_unused_imports(ast_tree)
-    if unused_imports:
-        source = _remove_unused_imports(ast_tree, source, unused_imports)
+    root = core.parse(source)
+    unused_imports = _get_unused_imports(root)
+    completely_unused_imports, partially_unused_imports = _get_unused_imports_split(
+        root, unused_imports
+    )
+
+    for node in completely_unused_imports:
+        yield node, None
+
+    # For every import, construct what we would like it to look like with redundant stuff removed, find the old
+    # version of it, and replace it.
+
+    # Iterate from bottom to top of file, so we don't have to re-calculate the linenos etc.
+    for node in partially_unused_imports:
+        yield node, _construct_import_statement(node, unused_imports)
 
     return source
-
-
-def fix_tabs(source: str) -> str:
-    """Replace tabs with 4 spaces in source code
-
-    Args:
-        source (str): Python source code
-
-    Returns:
-        str: Formatted source code
-    """
-    return re.sub(r"\t", " " * 4, source)
 
 
 def fix_too_many_blank_lines(source: str) -> str:
@@ -449,19 +305,7 @@ def fix_too_many_blank_lines(source: str) -> str:
     return source
 
 
-def fix_rmspace(source: str) -> str:
-    """Remove trailing whitespace from source code.
-
-    Args:
-        source (str): Python source code
-
-    Returns:
-        str: Source code, without trailing whitespace
-    """
-    return rmspace.format_str(source)
-
-
-@processing.fix
+@processing.fix(max_iter=1)
 def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
     root = core.parse(source)
 
@@ -516,6 +360,7 @@ def fix_line_lengths(source: str, *, max_line_length: int = 100) -> str:
             formatted_ranges.add(source_range)
 
 
+@processing.fix
 def align_variable_names_with_convention(
     source: str, preserve: Collection[str] = frozenset()
 ) -> str:
@@ -536,15 +381,173 @@ def align_variable_names_with_convention(
         str: Source code, where all variable names comply with normal convention
     """
     ast_tree = core.parse(source)
-    renamings = _get_variable_name_substitutions(ast_tree, source, preserve)
+    renamings = collections.defaultdict(set)
+    classdefs: List[ast.ClassDef] = []
+    funcdefs: List[ast.FunctionDef] = []
+    for node in parsing.iter_classdefs(ast_tree):
+        name = node.name
+        substitute = style.rename_class(
+            name, private=parsing.is_private(name) or name not in preserve
+        )
+        classdefs.append(node)
+        renamings[node].add(substitute)
+        for refnode in _get_uses_of(node, ast_tree, source):
+            renamings[refnode].add(substitute)
 
-    if renamings:
-        source = _fix_variable_names(source, renamings, preserve)
+    typevars = set()
+    for node in parsing.iter_typedefs(ast_tree):
+        assert len(node.targets) == 1
+        target = node.targets[0]
+        assert isinstance(target, (ast.Name, ast.Attribute))
+        typevars.add(target)
+        for refnode in _get_uses_of(target, ast_tree, source):
+            typevars.add(refnode)
 
-    return source
+    for node in parsing.iter_funcdefs(ast_tree):
+        name = node.name
+        substitute = style.rename_variable(
+            name, private=parsing.is_private(name) or name not in preserve, static=False
+        )
+        funcdefs.append(node)
+        renamings[node].add(substitute)
+        for refnode in _get_uses_of(node, ast_tree, source):
+            renamings[refnode].add(substitute)
+
+    for node in parsing.iter_assignments(ast_tree):
+        if node in typevars:
+            substitute = style.rename_class(node.id, private=parsing.is_private(node.id))
+        else:
+            substitute = style.rename_variable(
+                node.id, private=parsing.is_private(node.id), static=True
+            )
+        renamings[node].add(substitute)
+        for refnode in _get_uses_of(node, ast_tree, source):
+            renamings[refnode].add(substitute)
+
+    while funcdefs or classdefs:
+        for partial_tree in classdefs.copy():
+            classdefs.remove(partial_tree)
+            for node in parsing.iter_classdefs(partial_tree):
+                name = node.name
+                classdefs.append(node)
+                substitute = style.rename_class(name, private=parsing.is_private(name))
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+            for node in parsing.iter_funcdefs(partial_tree):
+                name = node.name
+                # Don't rename magic members, don't rename if there is inheritance.
+                if partial_tree.bases or parsing.is_magic_method(node):
+                    renamings[node] = {name}
+                funcdefs.append(node)
+                substitute = style.rename_variable(
+                    name, private=parsing.is_private(name), static=False
+                )
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+            for node in parsing.iter_assignments(partial_tree):
+                name = node.id
+                # Don't rename magic members, don't rename if there is inheritance.
+                if partial_tree.bases or (name.startswith("__") and name.endswith("__")):
+                    renamings[node] = {name}
+                substitute = style.rename_variable(
+                    name, private=parsing.is_private(name), static=False
+                )
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+        for partial_tree in funcdefs.copy():
+            funcdefs.remove(partial_tree)
+            for node in parsing.iter_classdefs(partial_tree):
+                name = node.name
+                classdefs.append(node)
+                substitute = style.rename_class(name, private=False)
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+            for node in parsing.iter_funcdefs(partial_tree):
+                name = node.name
+                funcdefs.append(node)
+                substitute = style.rename_variable(name, private=False, static=False)
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+            for node in parsing.iter_assignments(partial_tree):
+                name = node.id
+                substitute = style.rename_variable(name, private=False, static=False)
+                renamings[node].add(substitute)
+                for refnode in _get_uses_of(node, partial_tree, source):
+                    renamings[refnode].add(substitute)
+
+    blacklisted_names = (
+        tracing.get_imported_names(ast_tree)
+        | tracing.get_defined_names(ast_tree)
+        | constants.BUILTIN_FUNCTIONS
+        | constants.PYTHON_KEYWORDS
+    )
+    renamings = {
+        node: list(substitutes)[0]
+        for node, substitutes in renamings.items()
+        if len(substitutes) == 1 and blacklisted_names.isdisjoint(substitutes)
+    }
+    substitute_node_renamings = collections.defaultdict(set)
+    for node, substitute in renamings.items():
+        substitute_node_renamings[substitute].add(node)
+
+    transaction = 0
+    for substitute, nodes in substitute_node_renamings.items():
+        replacements = []
+        for node in nodes:
+            if isinstance(node, ast.Name):
+                if node.id == substitute:
+                    continue
+                replacement = ast.Name(id=substitute)
+            elif isinstance(node, ast.FunctionDef):
+                if node.name == substitute:
+                    continue
+                replacement = ast.FunctionDef(
+                    name=substitute,
+                    args=node.args,
+                    body=node.body,
+                    decorator_list=node.decorator_list,
+                    returns=node.returns,
+                    type_comment=node.type_comment,
+                )
+            elif isinstance(node, ast.AsyncFunctionDef):
+                if node.name == substitute:
+                    continue
+                replacement = ast.AsyncFunctionDef(
+                    name=substitute,
+                    args=node.args,
+                    body=node.body,
+                    decorator_list=node.decorator_list,
+                    returns=node.returns,
+                    type_comment=node.type_comment,
+                )
+            elif isinstance(node, ast.ClassDef):
+                if node.name == substitute:
+                    continue
+                replacement = ast.ClassDef(
+                    name=substitute,
+                    bases=node.bases,
+                    keywords=node.keywords,
+                    body=node.body,
+                    decorator_list=node.decorator_list,
+                )
+            else:
+                logger.error("Renaming not implemented for node {} of type {}", node, type(node))
+                replacements.clear()
+                break
+
+            ast.fix_missing_locations(replacement)
+
+            yield node, replacement, transaction
+
+        transaction += 1
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def undefine_unused_variables(source: str, preserve: Collection[str] = frozenset()) -> str:
     """Remove definitions of unused variables
 
@@ -755,6 +758,7 @@ def _is_pointless_string(node: ast.AST) -> bool:
     return core.match_template(node, ast.Expr(value=ast.Constant(value=str)))
 
 
+@processing.fix
 def delete_pointless_statements(source: str) -> str:
     """Delete pointless statements with no side effects from code
 
@@ -765,19 +769,12 @@ def delete_pointless_statements(source: str) -> str:
         str: Modified code
     """
     ast_tree = core.parse(source)
-    delete = []
     safe_callables = parsing.safe_callable_names(ast_tree)
     for node in itertools.chain([ast_tree], parsing.iter_bodies_recursive(ast_tree)):
         for i, child in enumerate(node.body):
             if not core.has_side_effect(child, safe_callables):
                 if i > 0 or not _is_pointless_string(child):  # Docstring
-                    delete.append(child)
-
-    if delete:
-        logger.debug("Removing pointless statements")
-        source = processing.remove_nodes(source, delete, ast_tree)
-
-    return source
+                    yield child, None
 
 
 def _iter_unreachable_nodes(body: Iterable[ast.AST]) -> Iterable[ast.AST]:
@@ -860,6 +857,7 @@ def delete_unused_functions_and_classes(
             yield def_node, None
 
 
+@processing.fix
 def delete_unreachable_code(source: str) -> str:
     """Find and delete dead code.
 
@@ -871,10 +869,13 @@ def delete_unreachable_code(source: str) -> str:
     """
     root = core.parse(source)
 
-    delete = set()
+    transaction = 0
     for node in parsing.iter_bodies_recursive(root):
         if not isinstance(node, (ast.If, ast.While)):
-            delete.update(_iter_unreachable_nodes(node.body))
+            for unreachable_node in _iter_unreachable_nodes(node.body):
+                yield unreachable_node, None, transaction
+
+            transaction += 1
             continue
 
         try:
@@ -883,22 +884,20 @@ def delete_unreachable_code(source: str) -> str:
             continue
 
         if isinstance(node, ast.While) and not test_value:
-            delete.add(node)
+            yield node, None, transaction
             continue
 
         if isinstance(node, ast.If):
             if test_value and node.body:
-                delete.update(node.orelse)
+                for _ in node.orelse:
+                    yield node, None, transaction
             elif not test_value and node.orelse:
-                delete.update(node.body)
+                for _ in node.body:
+                    yield node, None, transaction
             else:
-                delete.add(node)
+                yield node, None, transaction
 
-    if delete:
-        logger.debug("Removing unreachable code")
-        source = processing.remove_nodes(source, delete, root)
-
-    return source
+            transaction += 1
 
 
 def _get_package_names(node: ast.Import | ast.ImportFrom):
@@ -1041,7 +1040,7 @@ def remove_duplicate_functions(source: str, preserve: Collection[str]) -> str:
     return source
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def remove_redundant_else(source: str) -> str:
     """Remove redundante else and elif statements in code.
 
@@ -1066,8 +1065,8 @@ def remove_redundant_else(source: str) -> str:
             if orelse.startswith("elif"):  # Regular elif
                 modified_orelse = re.sub("^elif", "if", orelse)
 
-                source = source[:start] + modified_orelse + source[end:]
                 yield core.Range(start, end), modified_orelse
+                continue
 
             # Otherwise it's an else: if:, which is handled below
 
@@ -1182,10 +1181,8 @@ def _orelse_preferred_as_body(body: Sequence[ast.AST], orelse: Sequence[ast.AST]
     orelse_branches = _count_branches(orelse)
     if orelse_blocking and body_blocking and body_branches >= 2 * orelse_branches:
         return True
-    if isinstance(orelse[0], (ast.Return, ast.Continue, ast.Break)) and len(body) > 3:
-        return True
 
-    return False
+    return isinstance(orelse[0], (ast.Return, ast.Continue, ast.Break)) and len(body) > 3
 
 
 def _sequential_similar_ifs(source: str, root: ast.AST) -> Collection[ast.If]:
@@ -1196,7 +1193,7 @@ def _sequential_similar_ifs(source: str, root: ast.AST) -> Collection[ast.If]:
     )
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def _swap_explicit_if_else(source: str) -> str:
     root = core.parse(source)
     sequential_similar_ifs = _sequential_similar_ifs(source, root)
@@ -1374,16 +1371,16 @@ def remove_redundant_comprehensions(source: str) -> str:
     replace = "{{funcname(root)}}({{iterable}})"
     funcname = lambda template_match_tuple: comprehension_wrapper_funcs[type(template_match_tuple)]
 
-    yield from processing.find_replace(source, find=find, replace=replace, funcname=funcname)
+    yield from processing.find_replace(source, find, replace, funcname=funcname)
 
 
 @processing.fix
 def replace_functions_with_literals(source: str) -> str:
     root = core.parse(source)
 
-    yield from processing.find_replace(source, find="list()", replace="[]")
-    yield from processing.find_replace(source, find="tuple()", replace="()")
-    yield from processing.find_replace(source, find="dict()", replace="{}")
+    yield from processing.find_replace(source, "list()", "[]")
+    yield from processing.find_replace(source, "tuple()", "()")
+    yield from processing.find_replace(source, "dict()", "{}")
 
     template = core.compile_template(
         "{{func}}({{arg}})",
@@ -1423,10 +1420,12 @@ def replace_for_loops_with_dict_comp(source: str) -> str:
         targets=[ast.Name(id=core.Wildcard("target", str))],
     )
 
+    transaction = 0
     root = core.parse(source)
     for (_, target, value), (n2,) in core.walk_sequence(root, assign_template, ast.For):
         body_node = n2
         generators = []
+        transaction += 1
 
         while core.match_template(
             body_node, (ast.For(body=[object]), ast.If(body=[object], orelse=[]))
@@ -1456,17 +1455,17 @@ def replace_for_loops_with_dict_comp(source: str) -> str:
             key=body_node.targets[0].slice, value=body_node.value, generators=generators
         )
         if core.match_template(value, ast.Dict(values=[], keys=[])):
-            yield value, comp
-            yield n2, None
+            yield value, comp, transaction
+            yield n2, None, transaction
         elif core.match_template(value, ast.Dict(values=list, keys={None})):
-            yield value, ast.Dict(keys=value.keys + [None], values=value.values + [comp])
-            yield n2, None
+            yield value, ast.Dict(keys=value.keys + [None], values=value.values + [comp]), transaction
+            yield n2, None, transaction
         elif core.match_template(value, ast.Dict(values=list, keys=list)):
-            yield value, ast.Dict(keys=[None, None], values=[value, comp])
-            yield n2, None
+            yield value, ast.Dict(keys=[None, None], values=[value, comp]), transaction
+            yield n2, None, transaction
         elif isinstance(value, ast.DictComp):
-            yield value, ast.Dict(keys=[None, None], values=[value, comp])
-            yield n2, None
+            yield value, ast.Dict(keys=[None, None], values=[value, comp]), transaction
+            yield n2, None, transaction
 
 
 @processing.fix
@@ -1480,10 +1479,12 @@ def replace_for_loops_with_set_list_comp(source: str) -> str:
     set_init_template = ast.Call(func=ast.Name(id="set"), args=[], keywords=[])
     list_init_template = ast.List(elts=[])  # list() should have been replaced by [] elsewhere.
 
+    transaction = 0
     root = core.parse(source)
     for (_, target, value), (n2,) in core.walk_sequence(root, assign_template, for_template):
         body_node = n2
         generators = []
+        transaction += 1
 
         while core.match_template(body_node, (for_template, if_template)):
             if isinstance(body_node, ast.If):
@@ -1520,8 +1521,8 @@ def replace_for_loops_with_set_list_comp(source: str) -> str:
             else:
                 continue
 
-            yield value, comp_type(elt=body_node.value.args[0], generators=generators)
-            yield n2, None
+            yield value, comp_type(elt=body_node.value.args[0], generators=generators), transaction
+            yield n2, None, transaction
 
         elif core.match_template(body_node, augass_template):
             if isinstance(value, ast.List):
@@ -1534,18 +1535,19 @@ def replace_for_loops_with_set_list_comp(source: str) -> str:
                 if not core.literal_value(value):
                     if isinstance(body_node.op, ast.Sub):
                         replacement = ast.UnaryOp(op=body_node.op, operand=replacement)
-                    yield value, replacement
-                    yield n2, None
+                    yield value, replacement, transaction
+                    yield n2, None, transaction
                     continue
 
             except ValueError:
                 pass
 
             replacement = ast.BinOp(left=value, op=body_node.op, right=replacement)
-            yield value, replacement
-            yield n2, None
+            yield value, replacement, transaction
+            yield n2, None, transaction
 
 
+@processing.fix
 def inline_math_comprehensions(source: str) -> str:
     root = core.parse(source)
 
@@ -1612,43 +1614,42 @@ def inline_math_comprehensions(source: str) -> str:
         if assignment in replacements:
             del replacements[assignment]
 
-    return processing.replace_nodes(source, replacements)
+    yield from replacements.items()
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def simplify_transposes(source: str) -> str:
-
     find = "zip(*zip(*{{value}}))"
     replace = "{{value}}"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "zip(*{{value}}.T)"
     replace = "{{value}}"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "zip(*{{value}}).T"
     replace = "{{value}}"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "{{value}}.T.T"
     replace = "{{value}}"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "np.array({{value}}.T).T"
     replace = "{{value}}"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "np.array(np.matmul({{left}}, {{right}}))"
     replace = "np.matmul({{left}}, {{right}})"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "np.array(np.matmul({{left}}, {{right}}).T)"
     replace = "np.matmul({{left}}, {{right}}).T"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     find = "np.matmul({{left}}.T, {{right}}.T).T"
     replace = "np.matmul({{right}}, {{left}})"
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace)
 
     root = core.parse(source)
 
@@ -1662,7 +1663,7 @@ def simplify_transposes(source: str) -> str:
             yield node, second_transpose_target
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def remove_dead_ifs(source: str) -> str:
     root = core.parse(source)
 
@@ -1776,14 +1777,15 @@ def remove_dead_ifs(source: str) -> str:
             continue
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def delete_commented_code(source: str) -> str:
     matches = list(re.finditer(r"(?<![^\n])(\s*(#.*))+", source))
     root = core.parse(source)
-    code_string_ranges = {
+    code_ranges = [
         core.get_charnos(node, source)
         for node in core.walk(root, (ast.Constant(value=str), ast.JoinedStr))
-    }
+    ]
+    removed_ranges = []
     for commented_block in matches:
         start = commented_block.start()
         end = commented_block.end()
@@ -1800,13 +1802,11 @@ def delete_commented_code(source: str) -> str:
                 start_offset = sum(line_lengths[:si]) if si > 0 else 0
                 end_offset = sum(line_lengths[-se:]) if se > 0 else 0
 
-                selection_end = end - end_offset
-                selection_start = start + start_offset
+                removed_range = core.Range(start + start_offset, end - end_offset)
 
-                if any(
-                    node_start <= selection_end and selection_start <= node_end
-                    for node_start, node_end in code_string_ranges
-                ):
+                if any(removed_range & other for other in removed_ranges):
+                    continue
+                if any(removed_range & other for other in code_ranges):
                     continue
 
                 uncommented_block = re.sub(
@@ -1857,7 +1857,8 @@ def delete_commented_code(source: str) -> str:
                 ):
                     continue
 
-                yield core.Range(start + start_offset, end - end_offset), None
+                yield removed_range, None
+                removed_ranges.append(removed_range)
 
 
 @processing.fix
@@ -1878,7 +1879,7 @@ def replace_with_filter(source: str) -> str:
         {{body}}
     """
     template = core.compile_template((find_positive, find_negative), expand="body")
-    iterator1 = processing.find_replace(source, find=template, replace=replace, yield_match=True)
+    iterator1 = processing.find_replace(source, template, replace, yield_match=True)
 
     find_positive = """
     for {{target}} in {{iter}}:
@@ -1896,7 +1897,7 @@ def replace_with_filter(source: str) -> str:
         {{body}}
     """
     template = core.compile_template((find_positive, find_negative), expand="body")
-    iterator2 = processing.find_replace(source, find=template, replace=replace, yield_match=True)
+    iterator2 = processing.find_replace(source, template, replace, yield_match=True)
 
     filter_derivative_template = ast.Call(
         func=core.compile_template(("filter", "filterfalse", "itertools.filterfalse"))
@@ -1967,12 +1968,14 @@ def implicit_defaultdict(source: str) -> str:
     )
     if_template = ast.If(body=[object], orelse=[])
 
+    transaction = 0
     root = core.parse(source)
     for (_, target, value), (n2,) in core.walk_sequence(root, assign_template, ast.For):
         loop_replacements = {}
         loop_removals = set()
         subscript_calls = set()
         consistent = True
+        transaction += 1
 
         for (condition,), (append,) in core.walk_sequence(n2, if_template, ast.Expr):
             try:
@@ -2046,23 +2049,28 @@ def implicit_defaultdict(source: str) -> str:
         if not consistent:
             continue
 
+        replacements = []
+
         if subscript_calls and subscript_calls <= {"add", "update"}:
-            yield from loop_replacements.items()
-            yield from zip(loop_removals, itertools.repeat(None))
-            yield value, ast.Call(
+            replacements.extend(loop_replacements.items())
+            replacements.extend(zip(loop_removals, itertools.repeat(None)))
+            replacements.append((value, ast.Call(
                 func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
                 args=[ast.Name(id="set")],
                 keywords=[],
-            )
+            )))
 
         if subscript_calls and subscript_calls <= {"append", "extend"}:
-            yield from loop_replacements.items()
-            yield from zip(loop_removals, itertools.repeat(None))
-            yield value, ast.Call(
+            replacements.extend(loop_replacements.items())
+            replacements.extend(zip(loop_removals, itertools.repeat(None)))
+            replacements.append((value, ast.Call(
                 func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
                 args=[ast.Name(id="list")],
                 keywords=[],
-            )
+            )))
+
+        for before, after in replacements:
+            yield before, after, transaction
 
 
 @processing.fix
@@ -2079,7 +2087,7 @@ def _replace_lambda_with_literal(source: str) -> str:
         ("lambda {{args}}, /: (*{{args}},)", "tuple"),
         ("lambda: {{func}}()", "{{func}}"),
     ):
-        yield from processing.find_replace(source, find=find, replace=replace)
+        yield from processing.find_replace(source, find, replace)
 
 
 @processing.fix
@@ -2091,8 +2099,9 @@ def _replace_lambda_with_function(source: str) -> str:
             args=core.Wildcard("call_args"),
             keywords=core.Wildcard("call_keywords"),
     ),)
+    replace = "{{func}}"
     for replacement_range, replacement, template_match in processing.find_replace(
-        source, find=find, replace="{{func}}", yield_match=True
+        source, find, replace, yield_match=True
     ):
         _, call_args, call_keywords, _, sign_args = template_match
         if sign_args.kw_defaults:
@@ -2119,11 +2128,10 @@ def _replace_lambda_with_function(source: str) -> str:
         yield replacement_range, replacement
 
 
+@processing.fix
 def simplify_redundant_lambda(source: str) -> str:
-    source = _replace_lambda_with_literal(source)
-    source = _replace_lambda_with_function(source)
-
-    return source
+    yield from _replace_lambda_with_literal._fix_func(source)
+    yield from _replace_lambda_with_function._fix_func(source)
 
 
 def _is_same_code(*nodes: ast.AST) -> bool:
@@ -2289,7 +2297,7 @@ def invalid_escape_sequence(source: str) -> str:
             yield node, "r" + code
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def replace_filter_lambda_with_comp(source: str) -> str:
     """Replace filter(lambda ..., iterable) with equivalent list comprehension
 
@@ -2305,9 +2313,7 @@ def replace_filter_lambda_with_comp(source: str) -> str:
 
     find = "filter(lambda {{arg}}: {{body}}, {{iterable}})"
     replace = "({{arg}} for {{arg}} in {{iterable}} if {{body}})"
-    for replacement_range, replacement in processing.find_replace(
-        source, find=find, replace=replace
-    ):
+    for replacement_range, replacement in processing.find_replace(source, find, replace):
         if any(replacement_range & for_range for for_range in for_ranges):
             continue
 
@@ -2316,7 +2322,7 @@ def replace_filter_lambda_with_comp(source: str) -> str:
     find = "filterfalse(lambda {{arg}}: {{body}}, {{iterable}})"
     replace = "({{arg}} for {{arg}} in {{iterable}} if not {{body}})"
     for replacement_range, replacement in processing.find_replace(
-        source, find=(find, "itertools." + find), replace=replace
+        source, (find, "itertools." + find), replace
     ):
         if any(replacement_range & for_range for for_range in for_ranges):
             continue
@@ -2324,7 +2330,7 @@ def replace_filter_lambda_with_comp(source: str) -> str:
         yield replacement_range, replacement
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def replace_map_lambda_with_comp(source: str) -> str:
     """Replace map(lambda ..., iterable) with equivalent list comprehension
 
@@ -2340,9 +2346,7 @@ def replace_map_lambda_with_comp(source: str) -> str:
     # Prevent replacement of map() calls where the map() call is the iterated value of a for loop
     root = core.parse(source)
     for_ranges = {core.get_charnos(node.iter, source) for node in core.walk(root, ast.For())}
-    for replacement_range, replacement in processing.find_replace(
-        source, find=find, replace=replace
-    ):
+    for replacement_range, replacement in processing.find_replace(source, find, replace):
         if any(replacement_range & for_range for for_range in for_ranges):
             continue
 
@@ -2377,7 +2381,7 @@ def replace_negated_numeric_comparison(source: str) -> str:
             )
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def merge_chained_comps(source: str) -> str:
     root = core.parse(source)
 
@@ -2418,7 +2422,7 @@ def merge_chained_comps(source: str) -> str:
         yield template_match.root, replacement
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def remove_redundant_comprehension_casts(source: str) -> str:
     root = core.parse(source)
 
@@ -2454,7 +2458,7 @@ def remove_redundant_comprehension_casts(source: str) -> str:
             yield node, ast.Call(func=ast.Name(id=func), args=[equivalent_setcomp], keywords=[])
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def remove_redundant_chain_casts(source: str) -> str:
     root = core.parse(source)
 
@@ -2503,7 +2507,7 @@ def replace_dict_assign_with_dict_literal(source: str) -> str:
             value=core.Wildcard("value", object, common=False),
     ),]
 
-    for first, *matches in core.walk_sequence(root, *template, expand_last=True):
+    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2512,9 +2516,9 @@ def replace_dict_assign_with_dict_literal(source: str) -> str:
             ),
             lineno=first.target.lineno,
         )
-        yield first.root, replacement
+        yield first.root, replacement, transaction
         for m in matches:
-            yield m.root, None
+            yield m.root, None, transaction
 
 
 @processing.fix
@@ -2534,7 +2538,7 @@ def replace_dict_update_with_dict_literal(source: str) -> str:
                 args=[core.Wildcard("other", object, common=False)],
     )),]
 
-    for first, *matches in core.walk_sequence(root, *template, expand_last=True):
+    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2543,9 +2547,9 @@ def replace_dict_update_with_dict_literal(source: str) -> str:
             ),
             lineno=first.target.lineno,
         )
-        yield first.root, replacement
+        yield first.root, replacement, transaction
         for m in matches:
-            yield m.root, None
+            yield m.root, None, transaction
 
 
 @processing.fix
@@ -2563,7 +2567,7 @@ def replace_dictcomp_assign_with_dict_literal(source: str) -> str:
             value=core.Wildcard("value", object, common=False),
     ),]
 
-    for first, *matches in core.walk_sequence(root, *template, expand_last=True):
+    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2572,9 +2576,9 @@ def replace_dictcomp_assign_with_dict_literal(source: str) -> str:
             ),
             lineno=first.target.lineno,
         )
-        yield first.root, replacement
+        yield first.root, replacement, transaction
         for m in matches:
-            yield m.root, None
+            yield m.root, None, transaction
 
 
 @processing.fix
@@ -2590,7 +2594,7 @@ def replace_dictcomp_update_with_dict_literal(source: str) -> str:
                 args=[core.Wildcard("other", object, common=False)],
     )),]
 
-    for first, *matches in core.walk_sequence(root, *template, expand_last=True):
+    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2599,12 +2603,87 @@ def replace_dictcomp_update_with_dict_literal(source: str) -> str:
             ),
             lineno=first.target.lineno,
         )
-        yield first.root, replacement
+        yield first.root, replacement, transaction
         for m in matches:
-            yield m.root, None
+            yield m.root, None, transaction
 
 
-@processing.fix(restart_on_replace=True)
+def _is_recursive_binop_chain(node: ast.AST, op: ast.AST) -> bool:
+    if isinstance(node, ast.BinOp):
+        return isinstance(node.op, op) and _is_recursive_binop_chain(node.right, op)
+
+    return True
+
+
+@processing.fix
+def replace_setcomp_add_with_union(source: str) -> str:
+    find = """
+    {{variable}} = {{something}}
+    for {{target}} in {{iterable}}:
+        {{variable}}.add({{something_else}})
+    """
+    replace = """
+    {{variable}} = {{something}} | {{{something_else}} for {{target}} in {{iterable}}}
+    """
+    find = core.compile_template(find, something=(ast.SetComp, ast.Set, ast.BinOp(op=ast.BitOr)))
+    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+        if isinstance(template_match.root, ast.BinOp):
+            if _is_recursive_binop_chain(template_match.root, ast.BitOr):
+                yield before, after
+        else:
+            yield before, after
+
+    find = """
+    {{variable}} = {{something}}
+    {{variable}}.update({{something_else}})
+    """
+    replace = """
+    {{variable}} = {{something}} | set({{something_else}})
+    """
+    find = core.compile_template(find, something=(ast.SetComp, ast.Set, ast.BinOp(op=ast.BitOr)))
+    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+        if isinstance(template_match.root, ast.BinOp):
+            if _is_recursive_binop_chain(template_match.root, ast.BitOr):
+                yield before, after
+        else:
+            yield before, after
+
+
+@processing.fix
+def replace_listcomp_append_with_plus(source: str) -> str:
+    find = """
+    {{variable}} = {{something}}
+    for {{target}} in {{iterable}}:
+        {{variable}}.append({{something_else}})
+    """
+    replace = """
+    {{variable}} = {{something}} + [{{something_else}} for {{target}} in {{iterable}}]
+    """
+    find = core.compile_template(find, something=(ast.ListComp, ast.List, ast.BinOp(op=ast.Add)))
+    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+        if isinstance(template_match.root, ast.BinOp):
+            if _is_recursive_binop_chain(template_match.root, ast.Add):
+                yield before, after
+        else:
+            yield before, after
+
+    find = """
+    {{variable}} = {{something}}
+    {{variable}}.extend({{something_else}})
+    """
+    replace = """
+    {{variable}} = {{something}} + list({{something_else}})
+    """
+    find = core.compile_template(find, something=(ast.ListComp, ast.List, ast.BinOp(op=ast.Add)))
+    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+        if isinstance(template_match.root, ast.BinOp):
+            if _is_recursive_binop_chain(template_match.root, ast.Add):
+                yield before, after
+        else:
+            yield before, after
+
+
+@processing.fix
 def simplify_dict_unpacks(source: str) -> str:
     root = core.parse(source)
 
@@ -2624,7 +2703,7 @@ def simplify_dict_unpacks(source: str) -> str:
         yield (node, ast.Dict(keys=keys, values=values))
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def simplify_collection_unpacks(source: str) -> str:
     root = core.parse(source)
 
@@ -2720,7 +2799,7 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
             keywords=[],
     ))
     template = [assign_template, modify_template]
-    for node, *matches in core.walk_sequence(root, *template, expand_last=True):
+    for transaction, (node, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
         assigned_value = node.root.value
         other_elts = []
         for m in matches:
@@ -2742,9 +2821,9 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
             else:
                 replacement = ast.Set(elts=elts)
 
-            yield assigned_value, replacement
+            yield assigned_value, replacement, transaction
             for m in matches:
-                yield m.root, None
+                yield m.root, None, transaction
 
         elif isinstance(assigned_value, (ast.ListComp, ast.SetComp)):
             elts = [ast.Starred(value=assigned_value)] + other_elts
@@ -2754,12 +2833,12 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
             else:
                 replacement = ast.Set(elts=elts)
 
-            yield assigned_value, replacement
+            yield assigned_value, replacement, transaction
             for m in matches:
-                yield m.root, None
+                yield m.root, None, transaction
 
 
-@processing.fix(restart_on_replace=True)
+@processing.fix
 def breakout_starred_args(source: str) -> str:
     root = core.parse(source)
 
@@ -2887,7 +2966,7 @@ def _keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
         ast.DictComp(generators=[comprehension_template]),
     )
 
-    for node, target, value in core.walk_wildcard(root, template):
+    for transaction, (node, target, value) in enumerate(core.walk_wildcard(root, template)):
         subscript_template = core.compile_template(
             "{{value}}[{{target}}]", value=value, target=target
         )
@@ -2906,11 +2985,12 @@ def _keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
         yield (
             node.generators[0].iter,
             ast.Call(func=ast.Attribute(value=value, attr="items"), args=[], keywords=[]),
+            transaction,
         )
 
-        yield target, ast.Tuple(elts=[target, ast.Name(id=node_target_name)])
+        yield target, ast.Tuple(elts=[target, ast.Name(id=node_target_name)]), transaction
         for subscript_use in value_target_subscripts:
-            yield subscript_use, ast.Name(id=node_target_name)
+            yield subscript_use, ast.Name(id=node_target_name), transaction
 
 
 @processing.fix
@@ -2926,11 +3006,11 @@ def _items_to_keys(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
         ifs=core.Wildcard("ifs", list),
         is_async=core.Wildcard("is_async", int),
     )
-    for node, _, _, target, value in core.walk_wildcard(root, template):
-        yield node.target, target
+    for transaction, (node, _, _, target, value) in enumerate(core.walk_wildcard(root, template)):
+        yield node.target, target, transaction
         yield node.iter, ast.Call(
             func=ast.Attribute(value=value, attr="keys"), args=[], keywords=[]
-        )
+        ), transaction
 
 
 @processing.fix
@@ -2946,11 +3026,11 @@ def _items_to_values(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
         ifs=core.Wildcard("ifs", list),
         is_async=core.Wildcard("is_async", int),
     )
-    for node, _, _, target, value in core.walk_wildcard(root, template):
-        yield node.target, target
+    for transaction, (node, _, _, target, value) in enumerate(core.walk_wildcard(root, template)):
+        yield node.target, target, transaction
         yield node.iter, ast.Call(
             func=ast.Attribute(value=value, attr="values"), args=[], keywords=[]
-        )
+        ), transaction
 
 
 @processing.fix
@@ -2963,7 +3043,7 @@ def _for_keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
             args=[],
             keywords=[],
     ),)
-    for node, target, value in core.walk_wildcard(root, template):
+    for transaction, (node, target, value) in enumerate(core.walk_wildcard(root, template)):
         subscript_template = core.compile_template(
             "{{value}}[{{target}}]", value=value, target=target
         )
@@ -2982,11 +3062,12 @@ def _for_keys_to_items(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
         yield (
             node.iter,
             ast.Call(func=ast.Attribute(value=value, attr="items"), args=[], keywords=[]),
+            transaction,
         )
 
-        yield target, ast.Tuple(elts=[target, ast.Name(id=node_target_name)])
+        yield target, ast.Tuple(elts=[target, ast.Name(id=node_target_name)]), transaction
         for subscript_use in value_target_subscripts:
-            yield subscript_use, ast.Name(id=node_target_name)
+            yield subscript_use, ast.Name(id=node_target_name), transaction
 
 
 @processing.fix
@@ -3000,11 +3081,11 @@ def _for_items_to_keys(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
             keywords=[],
     ),)
 
-    for node, target, value in core.walk_wildcard(root, template):
-        yield node.target, target
+    for transaction, (node, target, value) in enumerate(core.walk_wildcard(root, template)):
+        yield node.target, target, transaction
         yield node.iter, ast.Call(
             func=ast.Attribute(value=value, attr="keys"), args=[], keywords=[]
-        )
+        ), transaction
 
 
 @processing.fix
@@ -3018,11 +3099,11 @@ def _for_items_to_values(source: str) -> Iterable[Tuple[ast.AST, ast.AST]]:
             keywords=[],
     ),)
 
-    for node, target, value in core.walk_wildcard(root, template):
-        yield node.target, target
+    for transaction, (node, target, value) in enumerate(core.walk_wildcard(root, template)):
+        yield node.target, target, transaction
         yield node.iter, ast.Call(
             func=ast.Attribute(value=value, attr="values"), args=[], keywords=[]
-        )
+        ), transaction
 
 
 def implicit_dict_keys_values_items(source: str) -> str:
@@ -3048,9 +3129,9 @@ def redundant_enumerate(source: str) -> str:
         ast.For(iter=iter_template, target=target_template),
     )
 
-    for node, node_iter, target in core.walk_wildcard(root, template):
-        yield node.iter, node_iter
-        yield node.target, target
+    for transaction, (node, node_iter, target) in enumerate(core.walk_wildcard(root, template)):
+        yield node.iter, node_iter, transaction
+        yield node.target, target, transaction
 
 
 @processing.fix
@@ -3075,7 +3156,7 @@ def unused_zip_args(source: str) -> str:
     )
 
     safe_callables = parsing.safe_callable_names(root)
-    for node, elts, func, node_iter in core.walk_wildcard(root, template):
+    for transaction, (node, elts, func, node_iter) in enumerate(core.walk_wildcard(root, template)):
         new_elts = []
         iters = []
         changes = False
@@ -3100,14 +3181,14 @@ def unused_zip_args(source: str) -> str:
             continue
 
         if len(new_elts) == 0:  # 0 args used => replace zip with first arg
-            yield node.target, elts[0]
-            yield node.iter, node_iter[0]
+            yield node.target, elts[0], transaction
+            yield node.iter, node_iter[0], transaction
         elif len(new_elts) == 1:  # 1 arg used => replace zip with that arg
-            yield node.target, new_elts[0]
-            yield node.iter, iters[0]
+            yield node.target, new_elts[0], transaction
+            yield node.iter, iters[0], transaction
         elif len(new_elts) > 1:  # > 1 args used => remove unused ones, keep zip
-            yield node.target, ast.Tuple(elts=new_elts)
-            yield node.iter, ast.Call(func=func, args=iters, keywords=[])
+            yield node.target, ast.Tuple(elts=new_elts), transaction
+            yield node.iter, ast.Call(func=func, args=iters, keywords=[]), transaction
 
 
 @processing.fix
@@ -3135,9 +3216,9 @@ def simplify_assign_immediate_return(source: str) -> str:
 
         yield from processing.find_replace(
             source,
-            scope,
-            find=core.compile_template(find, value=object, name=name_template),
+            core.compile_template(find, value=object, name=name_template),
             replace=replace,
+            root=scope,
         )
 
 
@@ -3157,11 +3238,7 @@ def missing_context_manager(source: str) -> str:
         "bz2.BZ2File",
         "lzma.LZMAFile",
         "socket.socket",
-        "threading.Lock",
-        "threading.RLock",
         "multiprocessing.Pool",
-        "multiprocessing.Lock",
-        "multiprocessing.RLock",
         "subprocess.Popen",
         "ftplib.FTP",
         "ftplib.FTP_TLS",
@@ -3194,6 +3271,9 @@ def missing_context_manager(source: str) -> str:
             isinstance(node, (ast.Yield, ast.Return)) and core.walk(node, target_template)
             for node in nodes
         ):
+            continue
+
+        if any(core.filter_nodes(nodes, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef))):
             continue
 
         nodes = [tup[0] for tup in nodes]
@@ -3237,9 +3317,8 @@ def _group_statements_of_type(root: ast.AST, template: ast.AST) -> Sequence[Sequ
     """Get unique groups of imports, such that they're as long as possible, and don't overlap."""
     groups = [
         [m[0] for m in matches]
-        for matches in core.walk_sequence(
-            root, template, expand_first=True, expand_last=True
-    )]
+        for matches in core.walk_sequence(root, template, expand_first=True, expand_last=True)
+    ]
     node_groups = collections.defaultdict(list)
     for group in groups:
         for node in group:
@@ -3275,7 +3354,8 @@ def _fix_duplicate_from_imports(source: str) -> str:
                     names=[
                         ast.alias(name=name, asname=asname)
                         for name, asname in sorted(
-                            module_import_aliases[module], key=lambda t: (t[0], t[1] is not None, t[1])
+                            module_import_aliases[module],
+                            key=lambda t: (t[0], t[1] is not None, t[1]),
                     )],
                     level=import_nodes[0].level,
                 )
@@ -3464,7 +3544,7 @@ def fix_import_spacing(source: str) -> str:
     template = (ast.Import, ast.ImportFrom)
     replacements = {}
     for (i1, *_), (i2, *_) in core.walk_sequence(root, ast.AST, ast.AST):
-        i1_start, i1_end = core.get_charnos(i1, source)
+        _, i1_end = core.get_charnos(i1, source)
         i2_start, i2_end = core.get_charnos(i2, source)
         whitespace_between = source[i1_end:i2_start]
 
@@ -3486,7 +3566,9 @@ def fix_import_spacing(source: str) -> str:
         else:
             continue
 
-        indentation_level = formatting.indentation_level(whitespace_between + source[i2_start:i2_end])
+        indentation_level = formatting.indentation_level(
+            whitespace_between + source[i2_start:i2_end]
+        )
         spacing = "\n" * correct_newline_count + " " * indentation_level
         spacing = re.sub(r"\n +\n", "\n\n", spacing)
         replacement_range = core.Range(i1_end, i2_start)
@@ -3499,7 +3581,11 @@ def fix_import_spacing(source: str) -> str:
 
     new_source = source
     for replacement_range in sorted(replacements, reverse=True):
-        new_source = new_source[: replacement_range.start] + replacements[replacement_range] + new_source[replacement_range.end :]
+        new_source = (
+            new_source[: replacement_range.start]
+            + replacements[replacement_range]
+            + new_source[replacement_range.end :]
+        )
 
     if core.is_valid_python(new_source):
         return new_source
@@ -3526,7 +3612,16 @@ def fix_if_return(source: str) -> str:
     """
     replace = "return {{condition}}"
 
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace, transaction=0)
+
+    find = """
+    if {{condition}}:
+        return False
+    return True
+    """
+    replace = "return not ({{condition}})"
+
+    yield from processing.find_replace(source, find, replace, condition=ast.BoolOp, transaction=1)
 
     find = """
     if {{condition}}:
@@ -3535,7 +3630,7 @@ def fix_if_return(source: str) -> str:
     """
     replace = "return not {{condition}}"
 
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace, transaction=2)
 
 
 @processing.fix
@@ -3548,7 +3643,17 @@ def fix_if_assign(source: str) -> str:
     """
     replace = "{{variable}} = {{condition}}"
 
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace, transaction=0)
+
+    find = """
+    if {{condition}}:
+        {{variable}} = False
+    else:
+        {{variable}} = True
+    """
+    replace = "{{variable}} = not ({{condition}})"
+
+    yield from processing.find_replace(source, find, replace, condition=ast.BoolOp, transaction=1)
 
     find = """
     if {{condition}}:
@@ -3558,4 +3663,4 @@ def fix_if_assign(source: str) -> str:
     """
     replace = "{{variable}} = not {{condition}}"
 
-    yield from processing.find_replace(source, find=find, replace=replace)
+    yield from processing.find_replace(source, find, replace, transaction=2)

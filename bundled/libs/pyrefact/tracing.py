@@ -319,18 +319,25 @@ def trace_origin(name: str, source: str, *, __all__: bool = False) -> _TraceResu
     return None
 
 
+def get_defined_names(root: ast.Module) -> Collection[str]:
+    """Get names defined in scope, excluding imports."""
+    return (
+        {node.id for node in core.walk(root, ast.Name(ctx=ast.Store))}
+        | {node.name for node in core.walk(root, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        | {node.name for node in core.walk(root, ast.ClassDef)}
+        | {node.arg for node in core.walk(root, ast.arg)}
+    )
+
+
+def _get_referenced_names(root: ast.Module) -> Collection[str]:
+    return {node.id for node in core.walk(root, ast.Name(ctx=ast.Load))}
+
+
 def get_undefined_variables(source: str) -> Collection[str]:
     root = core.parse(source)
     imported_names = get_imported_names(root)
-    defined_names = set()
-    referenced_names = set()
-    for node in core.walk(root, ast.Name):
-        if isinstance(node.ctx, ast.Load):
-            referenced_names.add(node.id)
-        elif isinstance(node.ctx, ast.Store):
-            defined_names.add(node.id)
-    for node in core.walk(root, ast.arg):
-        defined_names.add(node.arg)
+    defined_names = get_defined_names(root)
+    referenced_names = _get_referenced_names(root)
 
     return (
         referenced_names
@@ -383,6 +390,7 @@ def fix_starred_imports(source: str) -> str:
             yield node, None
 
 
+@processing.fix
 def fix_reimported_names(source: str) -> str:
     """Remove reimported names from imports."""
 
@@ -392,9 +400,6 @@ def fix_reimported_names(source: str) -> str:
         targets=[ast.Name(id="__all__")], value=ast.List(elts={ast.Constant(value=str)})
     )
     module_from_imports = collections.defaultdict(set)
-    additions = set()
-    removals = set()
-    replacements = {}
 
     import_insert_lineno = min(
         (node.lineno for node in core.walk(root, (ast.ImportFrom, ast.Import))), default=-1
@@ -462,7 +467,7 @@ def fix_reimported_names(source: str) -> str:
                     else:
                         new_alias = ast.alias(name=original_name, asname=asname)
 
-                    additions.add(ast.Import(names=[new_alias]), lineno=import_insert_lineno)
+                    yield None, ast.Import(names=[new_alias], lineno=import_insert_lineno)
                 else:
                     node_names.append(alias)
             else:
@@ -470,24 +475,14 @@ def fix_reimported_names(source: str) -> str:
 
         if node_names != node.names:
             if node_names:
-                replacements[node] = ast.ImportFrom(
-                    module=node.module, names=node_names, level=node.level
-                )
+                yield node, ast.ImportFrom(module=node.module, names=node_names, level=node.level)
             else:
-                removals.add(node)
+                yield node, None
 
     for module, aliases in module_from_imports.items():
-        additions.add(
-            ast.ImportFrom(
-                module=module,
-                names=sorted(aliases, key=lambda alias: alias.name),
-                level=0,
-                lineno=import_insert_lineno,
-        ))
-
-    if additions or removals or replacements:
-        source = processing.alter_code(
-            source, root, additions=additions, removals=removals, replacements=replacements
+        yield None, ast.ImportFrom(
+            module=module,
+            names=sorted(aliases, key=lambda alias: alias.name),
+            level=0,
+            lineno=import_insert_lineno,
         )
-
-    return source
