@@ -146,6 +146,11 @@ def _register_capabilities_hooks(converter: cattrs.Converter) -> cattrs.Converte
             return object_
         return converter.structure(object_, lsp_types.ReferenceOptions)
 
+    def _position_encoding_hook(
+        object_: Union[lsp_types.PositionEncodingKind, OptionalPrimitive], _: type
+    ) -> Union[lsp_types.PositionEncodingKind, OptionalPrimitive]:
+        return object_
+
     def _document_highlight_provider_hook(
         object_: Any, _: type
     ) -> Union[OptionalPrimitive, lsp_types.DocumentHighlightOptions]:
@@ -614,6 +619,103 @@ def _register_capabilities_hooks(converter: cattrs.Converter) -> cattrs.Converte
             return object_
         return converter.structure(object_, lsp_types.WatchKind)
 
+    def _notebook_sync_option_selector_hook(
+        object_: Any, _: type
+    ) -> Union[
+        lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType1,
+        lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType2,
+    ]:
+        if "notebook" in object_:
+            return converter.structure(
+                object_, lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType1
+            )
+        else:
+            return converter.structure(
+                object_, lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType2
+            )
+
+    def _semantic_token_registration_options_hook(
+        object_: Any, _: type
+    ) -> Optional[
+        Union[OptionalPrimitive, lsp_types.SemanticTokensRegistrationOptionsFullType1]
+    ]:
+        if object_ is None:
+            return None
+        if isinstance(object_, (bool, int, str, float)):
+            return object_
+        return converter.structure(
+            object_, lsp_types.SemanticTokensRegistrationOptionsFullType1
+        )
+
+    def _inline_completion_provider_hook(
+        object_: Any, _: type
+    ) -> Optional[Union[OptionalPrimitive, lsp_types.InlineCompletionOptions]]:
+        if object_ is None:
+            return None
+        if isinstance(object_, (bool, int, str, float)):
+            return object_
+        return converter.structure(object_, lsp_types.InlineCompletionOptions)
+
+    def _inline_completion_list_hook(
+        object_: Any, _: type
+    ) -> Optional[
+        Union[lsp_types.InlineCompletionList, List[lsp_types.InlineCompletionItem]]
+    ]:
+        if object_ is None:
+            return None
+        if isinstance(object_, list):
+            return [
+                converter.structure(item, lsp_types.InlineCompletionItem)
+                for item in object_
+            ]
+        return converter.structure(object_, lsp_types.InlineCompletionList)
+
+    def _string_value_hook(
+        object_: Any, _: type
+    ) -> Union[OptionalPrimitive, lsp_types.StringValue]:
+        if object_ is None:
+            return None
+        if isinstance(object_, (bool, int, str, float)):
+            return object_
+        return converter.structure(object_, lsp_types.StringValue)
+
+    def _symbol_list_hook(
+        object_: Any, _: type
+    ) -> Optional[
+        Union[List[lsp_types.SymbolInformation], List[lsp_types.WorkspaceSymbol]]
+    ]:
+        if object_ is None:
+            return None
+        assert isinstance(object_, list)
+        if len(object_) == 0:
+            return []  # type: ignore[return-value]
+        if "location" in object_[0]:
+            return [
+                converter.structure(item, lsp_types.SymbolInformation)
+                for item in object_
+            ]
+        else:
+            return [
+                converter.structure(item, lsp_types.WorkspaceSymbol) for item in object_
+            ]
+
+    def _notebook_sync_registration_option_selector_hook(
+        object_: Any, _: type
+    ) -> Union[
+        lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType1,
+        lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType2,
+    ]:
+        if "notebook" in object_:
+            return converter.structure(
+                object_,
+                lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType1,
+            )
+        else:
+            return converter.structure(
+                object_,
+                lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType2,
+            )
+
     structure_hooks = [
         (
             Optional[
@@ -904,6 +1006,57 @@ def _register_capabilities_hooks(converter: cattrs.Converter) -> cattrs.Converte
             Optional[Union[lsp_types.WatchKind, int]],
             _watch_kind_hook,
         ),
+        (
+            Union[
+                lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType1,
+                lsp_types.NotebookDocumentSyncOptionsNotebookSelectorType2,
+            ],
+            _notebook_sync_option_selector_hook,
+        ),
+        (
+            Optional[
+                Union[
+                    lsp_types.PositionEncodingKind,
+                    str,
+                ]
+            ],
+            _position_encoding_hook,
+        ),
+        (
+            Optional[Union[bool, lsp_types.SemanticTokensRegistrationOptionsFullType1]],
+            _semantic_token_registration_options_hook,
+        ),
+        (
+            Optional[Union[bool, lsp_types.InlineCompletionOptions]],
+            _inline_completion_provider_hook,
+        ),
+        (
+            Optional[
+                Union[
+                    lsp_types.InlineCompletionList, List[lsp_types.InlineCompletionItem]
+                ]
+            ],
+            _inline_completion_list_hook,
+        ),
+        (
+            Union[str, lsp_types.StringValue],
+            _string_value_hook,
+        ),
+        (
+            Optional[
+                Union[
+                    List[lsp_types.SymbolInformation], List[lsp_types.WorkspaceSymbol]
+                ]
+            ],
+            _symbol_list_hook,
+        ),
+        (
+            Union[
+                lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType1,
+                lsp_types.NotebookDocumentSyncRegistrationOptionsNotebookSelectorType2,
+            ],
+            _notebook_sync_registration_option_selector_hook,
+        ),
     ]
     for type_, hook in structure_hooks:
         converter.register_structure_hook(type_, hook)
@@ -1008,6 +1161,7 @@ def _register_required_structure_hooks(
             Union[str, Tuple[int, int]],
             _parameter_information_label_hook,
         ),
+        (lsp_types.LSPObject, _lsp_object_hook),
     ]
 
     if sys.version_info > (3, 8):

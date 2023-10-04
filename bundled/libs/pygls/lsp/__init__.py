@@ -19,6 +19,7 @@ from typing import Any, Callable, List, Optional, Union
 from lsprotocol.types import (
     ALL_TYPES_MAP,
     METHOD_TO_TYPES,
+    TEXT_DOCUMENT_DID_SAVE,
     TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
     TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL_DELTA,
     TEXT_DOCUMENT_SEMANTIC_TOKENS_RANGE,
@@ -29,9 +30,10 @@ from lsprotocol.types import (
     WORKSPACE_WILL_DELETE_FILES,
     WORKSPACE_WILL_RENAME_FILES,
     FileOperationRegistrationOptions,
+    SaveOptions,
     SemanticTokensLegend,
     SemanticTokensRegistrationOptions,
-    ShowDocumentResult
+    ShowDocumentResult,
 )
 from typeguard import check_type
 
@@ -41,9 +43,16 @@ ConfigCallbackType = Callable[[List[Any]], None]
 ShowDocumentCallbackType = Callable[[ShowDocumentResult], None]
 
 METHOD_TO_OPTIONS = {
-    TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL: Union[SemanticTokensLegend, SemanticTokensRegistrationOptions],
-    TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL_DELTA: Union[SemanticTokensLegend, SemanticTokensRegistrationOptions],
-    TEXT_DOCUMENT_SEMANTIC_TOKENS_RANGE: Union[SemanticTokensLegend, SemanticTokensRegistrationOptions],
+    TEXT_DOCUMENT_DID_SAVE: SaveOptions,
+    TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL: Union[
+        SemanticTokensLegend, SemanticTokensRegistrationOptions
+    ],
+    TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL_DELTA: Union[
+        SemanticTokensLegend, SemanticTokensRegistrationOptions
+    ],
+    TEXT_DOCUMENT_SEMANTIC_TOKENS_RANGE: Union[
+        SemanticTokensLegend, SemanticTokensRegistrationOptions
+    ],
     WORKSPACE_DID_CREATE_FILES: FileOperationRegistrationOptions,
     WORKSPACE_DID_DELETE_FILES: FileOperationRegistrationOptions,
     WORKSPACE_DID_RENAME_FILES: FileOperationRegistrationOptions,
@@ -93,11 +102,13 @@ def get_method_options_type(
     if options_type is not None:
         return options_type
 
-    registration_type = get_method_registration_options_type(method_name, lsp_methods_map)
+    registration_type = get_method_registration_options_type(
+        method_name, lsp_methods_map
+    )
     if registration_type is None:
         return None
 
-    type_name = registration_type.__name__.replace('Registration', '')
+    type_name = registration_type.__name__.replace("Registration", "")
     options_type = ALL_TYPES_MAP.get(type_name, None)
 
     if options_type is None:

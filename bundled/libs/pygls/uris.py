@@ -16,31 +16,36 @@
 # See the License for the specific language governing permissions and      #
 # limitations under the License.                                           #
 ############################################################################
-"""A collection of URI utilities with logic built on the VSCode URI library.
+"""
+A collection of URI utilities with logic built on the VSCode URI library.
 
 https://github.com/Microsoft/vscode-uri/blob/e59cab84f5df6265aed18ae5f43552d3eef13bb9/lib/index.ts
 """
+from typing import Optional, Tuple
+
 import re
 from urllib import parse
 
 from pygls import IS_WIN
 
-RE_DRIVE_LETTER_PATH = re.compile(r'^\/[a-zA-Z]:')
+RE_DRIVE_LETTER_PATH = re.compile(r"^\/[a-zA-Z]:")
+
+URLParts = Tuple[str, str, str, str, str, str]
 
 
-def _normalize_win_path(path):
-    netloc = ''
+def _normalize_win_path(path: str):
+    netloc = ""
 
     # normalize to fwd-slashes on windows,
     # on other systems bwd-slashes are valid
     # filename character, eg /f\oo/ba\r.txt
     if IS_WIN:
-        path = path.replace('\\', '/')
+        path = path.replace("\\", "/")
 
     # check for authority as used in UNC shares
     # or use the path as given
-    if path[:2] == '//':
-        idx = path.index('/', 2)
+    if path[:2] == "//":
+        idx = path.index("/", 2)
         if idx == -1:
             netloc = path[2:]
         else:
@@ -49,8 +54,8 @@ def _normalize_win_path(path):
 
     # Ensure that path starts with a slash
     # or that it is at least a slash
-    if not path.startswith('/'):
-        path = '/' + path
+    if not path.startswith("/"):
+        path = "/" + path
 
     # Normalize drive paths to lower case
     if RE_DRIVE_LETTER_PATH.match(path):
@@ -59,19 +64,20 @@ def _normalize_win_path(path):
     return path, netloc
 
 
-def from_fs_path(path):
+def from_fs_path(path: str):
     """Returns a URI for the given filesystem path."""
     try:
-        scheme = 'file'
-        params, query, fragment = '', '', ''
+        scheme = "file"
+        params, query, fragment = "", "", ""
         path, netloc = _normalize_win_path(path)
         return urlunparse((scheme, netloc, path, params, query, fragment))
     except (AttributeError, TypeError):
         return None
 
 
-def to_fs_path(uri):
-    """Returns the filesystem path of the given URI.
+def to_fs_path(uri: str):
+    """
+    Returns the filesystem path of the given URI.
 
     Will handle UNC paths and normalize windows drive letters to lower-case.
     Also uses the platform specific path separator. Will *not* validate the
@@ -80,11 +86,11 @@ def to_fs_path(uri):
     """
     try:
         # scheme://netloc/path;parameters?query#fragment
-        scheme, netloc, path, _params, _query, _fragment = urlparse(uri)
+        scheme, netloc, path, _, _, _ = urlparse(uri)
 
-        if netloc and path and scheme == 'file':
+        if netloc and path and scheme == "file":
             # unc path: file://shares/c$/far/boo
-            value = f'//{netloc}{path}'
+            value = f"//{netloc}{path}"
 
         elif RE_DRIVE_LETTER_PATH.match(path):
             # windows drive letter: file:///C:/far/boo
@@ -95,40 +101,55 @@ def to_fs_path(uri):
             value = path
 
         if IS_WIN:
-            value = value.replace('/', '\\')
+            value = value.replace("/", "\\")
 
         return value
     except TypeError:
         return None
 
 
-def uri_scheme(uri):
+def uri_scheme(uri: str):
     try:
         return urlparse(uri)[0]
     except (TypeError, IndexError):
         return None
 
 
-def uri_with(uri, scheme=None, netloc=None, path=None, params=None, query=None, fragment=None):
-    """Return a URI with the given part(s) replaced.
-
+# TODO: Use `URLParts` type
+def uri_with(
+    uri: str,
+    scheme: Optional[str] = None,
+    netloc: Optional[str] = None,
+    path: Optional[str] = None,
+    params: Optional[str] = None,
+    query: Optional[str] = None,
+    fragment: Optional[str] = None,
+):
+    """
+    Return a URI with the given part(s) replaced.
     Parts are decoded / encoded.
     """
-    old_scheme, old_netloc, old_path, old_params, old_query, old_fragment = \
-        urlparse(uri)
+    old_scheme, old_netloc, old_path, old_params, old_query, old_fragment = urlparse(
+        uri
+    )
 
-    path, _netloc = _normalize_win_path(path)
-    return urlunparse((
-        scheme or old_scheme,
-        netloc or old_netloc,
-        path or old_path,
-        params or old_params,
-        query or old_query,
-        fragment or old_fragment
-    ))
+    if path is None:
+        raise Exception("`path` must not be None")
+
+    path, _ = _normalize_win_path(path)
+    return urlunparse(
+        (
+            scheme or old_scheme,
+            netloc or old_netloc,
+            path or old_path,
+            params or old_params,
+            query or old_query,
+            fragment or old_fragment,
+        )
+    )
 
 
-def urlparse(uri):
+def urlparse(uri: str):
     """Parse and decode the parts of a URI."""
     scheme, netloc, path, params, query, fragment = parse.urlparse(uri)
     return (
@@ -137,11 +158,11 @@ def urlparse(uri):
         parse.unquote(path),
         parse.unquote(params),
         parse.unquote(query),
-        parse.unquote(fragment)
+        parse.unquote(fragment),
     )
 
 
-def urlunparse(parts):
+def urlunparse(parts: URLParts) -> str:
     """Unparse and encode parts of a URI."""
     scheme, netloc, path, params, query, fragment = parts
 
@@ -151,11 +172,13 @@ def urlunparse(parts):
     else:
         quoted_path = parse.quote(path)
 
-    return parse.urlunparse((
-        parse.quote(scheme),
-        parse.quote(netloc),
-        quoted_path,
-        parse.quote(params),
-        parse.quote(query),
-        parse.quote(fragment)
-    ))
+    return parse.urlunparse(
+        (
+            parse.quote(scheme),
+            parse.quote(netloc),
+            quoted_path,
+            parse.quote(params),
+            parse.quote(query),
+            parse.quote(fragment),
+        )
+    )
