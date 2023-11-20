@@ -53,13 +53,9 @@ exceptiongroup==1.1.3 \
     --hash=sha256:097acd85d473d75af5bb98e41b61ff7fe35efe6675e4f9370ec6ec5126d160e9 \
     --hash=sha256:343280667a4585d195ca1cf9cef84a4e178c4b6cf2274caef9859782b567d5e3
     # via cattrs
-importlib-metadata==6.8.0 \
-    --hash=sha256:3ebb78df84a805d7698245025b975d9d67053cd94c79245ba4b3eb694abe68bb \
-    --hash=sha256:dbace7892d8c0c4ac1ad096662232f831d4e64f4c4545bd53016a3e9d4654743
-    # via typeguard
-lsprotocol==2023.0.0b1 \
-    --hash=sha256:ade2cd0fa0ede7965698cb59cd05d3adbd19178fd73e83f72ef57a032fbb9d62 \
-    --hash=sha256:f7a2d4655cbd5639f373ddd1789807450c543341fa0a32b064ad30dbb9f510d4
+lsprotocol==2023.0.0 \
+    --hash=sha256:c9d92e12a3f4ed9317d3068226592860aab5357d93cf5b2451dc244eee8f35f2 \
+    --hash=sha256:e85fc87ee26c816adca9eb497bb3db1a7c79c477a11563626e712eaccf926a05
     # via pygls
 mpmath==1.3.0 \
     --hash=sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f \
@@ -83,9 +79,9 @@ platformdirs==3.11.0 \
     --hash=sha256:cf8ee52a3afdb965072dcc652433e0c7e3e40cf5ea1477cd4b3b1d2eb75495b3 \
     --hash=sha256:e9d171d00af68be50e9202731309c4e658fd8bc76f55c11c7dd760d023bda68e
     # via black
-pygls==1.1.2 \
-    --hash=sha256:783d29c93679bb6756772f2de9b9f53b1a6fdf3fba66aeca23e87aa8aab20ecf \
-    --hash=sha256:93fe17c01fd03307774290e685e7fa25bc1411cd72f243ff33eef21927fd0ad5
+pygls==1.2.0 \
+    --hash=sha256:72ec4a3532741be1a933c686ed1e138b9948af174213745527a7c3ed3147a573 \
+    --hash=sha256:e4ddf2fd27fd68a47644e25e7adc7e1810cf169b76f61f9e65ad6abae5814cf2
     # via -r requirements.in
 pyrefact==95 \
     --hash=sha256:182d31ad175039f02ce74d621d3fce50c35f3ffbd7dfdc256041acb0a4646f68 \
@@ -107,22 +103,13 @@ tomli==2.0.1 \
     --hash=sha256:939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc \
     --hash=sha256:de526c12914f0c550d15924c62d72abc48d6fe7364aa87328337a31007fe8a4f
     # via black
-typeguard==3.0.2 \
-    --hash=sha256:bbe993854385284ab42fd5bd3bee6f6556577ce8b50696d6cb956d704f286c8e \
-    --hash=sha256:fee5297fdb28f8e9efcb8142b5ee219e02375509cd77ea9d270b5af826358d5a
-    # via pygls
 typing-extensions==4.8.0 \
     --hash=sha256:8f92fc8806f9a6b641eaa5318da32b44d401efaac0f6678c9bc448ba3605faa0 \
     --hash=sha256:df8e4339e9cb77357558cbdbceca33c303714cf861d1eef15e1070055ae8b7ef
     # via
     #   black
     #   cattrs
-    #   typeguard
 wheel==0.41.2 \
     --hash=sha256:0c5ac5ff2afb79ac23ab82bab027a0be7b5dbcf2e54dc50efe4bf507de1f7985 \
     --hash=sha256:75909db2664838d015e3d9139004ee16711748a52c8f336b52882266540215d8
     # via astunparse
-zipp==3.17.0 \
-    --hash=sha256:0e923e726174922dce09c53c59ad483ff7bbb8e572e00c7f7c46b88556409f31 \
-    --hash=sha256:84e64a1c28cf7e91ed2078bb8cc8c259cb19b76942096c8d7b84947690cabaf0
-    # via importlib-metadata
