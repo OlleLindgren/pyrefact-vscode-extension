@@ -79,9 +79,9 @@ platformdirs==3.11.0 \
     --hash=sha256:cf8ee52a3afdb965072dcc652433e0c7e3e40cf5ea1477cd4b3b1d2eb75495b3 \
     --hash=sha256:e9d171d00af68be50e9202731309c4e658fd8bc76f55c11c7dd760d023bda68e
     # via black
-pygls==1.2.0 \
-    --hash=sha256:72ec4a3532741be1a933c686ed1e138b9948af174213745527a7c3ed3147a573 \
-    --hash=sha256:e4ddf2fd27fd68a47644e25e7adc7e1810cf169b76f61f9e65ad6abae5814cf2
+pygls==1.2.1 \
+    --hash=sha256:04f9b9c115b622dcc346fb390289066565343d60245a424eca77cb429b911ed8 \
+    --hash=sha256:7dcfcf12b6f15beb606afa46de2ed348b65a279c340ef2242a9a35c22eeafe94
     # via -r requirements.in
 pyrefact==95 \
     --hash=sha256:182d31ad175039f02ce74d621d3fce50c35f3ffbd7dfdc256041acb0a4646f68 \
