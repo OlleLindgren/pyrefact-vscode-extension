@@ -146,6 +146,12 @@ class LspSession(MethodDispatcher):
         fut = self._send_request("textDocument/formatting", params=formatting_params)
         return fut.result()
 
+    # Added in this (pyrefact-vscode-extension) repo, not part of the original template code.
+    def text_document_range_formatting(self, formatting_params):
+        """Sends text document references request to LSP server."""
+        fut = self._send_request("textDocument/rangeFormatting", params=formatting_params)
+        return fut.result()
+
     def text_document_code_action(self, code_action_params):
         """Sends text document code actions request to LSP server."""
         fut = self._send_request("textDocument/codeAction", params=code_action_params)
