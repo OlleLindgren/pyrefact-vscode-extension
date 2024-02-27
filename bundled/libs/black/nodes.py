@@ -14,7 +14,7 @@ from mypy_extensions import mypyc_attr
 
 from black.cache import CACHE_DIR
 from black.mode import Mode, Preview
-from black.strings import has_triple_quotes
+from black.strings import get_string_prefix, has_triple_quotes
 from blib2to3 import pygram
 from blib2to3.pgen2 import token
 from blib2to3.pytree import NL, Leaf, Node, type_repr
@@ -104,6 +104,7 @@ TEST_DESCENDANTS: Final = {
     syms.trailer,
     syms.term,
     syms.power,
+    syms.namedexpr_test,
 }
 TYPED_NAMES: Final = {syms.tname, syms.tname_star}
 ASSIGNMENTS: Final = {
@@ -121,6 +122,7 @@ ASSIGNMENTS: Final = {
     ">>=",
     "**=",
     "//=",
+    ":",
 }
 
 IMPLICIT_TUPLE: Final = {syms.testlist, syms.testlist_star_expr, syms.exprlist}
@@ -346,9 +348,7 @@ def whitespace(leaf: Leaf, *, complex_subscript: bool, mode: Mode) -> str:  # no
 
             return NO
 
-        elif Preview.walrus_subscript in mode and (
-            t == token.COLONEQUAL or prev.type == token.COLONEQUAL
-        ):
+        elif t == token.COLONEQUAL or prev.type == token.COLONEQUAL:
             return SPACE
 
         elif not complex_subscript:
@@ -405,6 +405,13 @@ def whitespace(leaf: Leaf, *, complex_subscript: bool, mode: Mode) -> str:  # no
             return NO
 
     return SPACE
+
+
+def make_simple_prefix(nl_count: int, form_feed: bool, empty_line: str = "\n") -> str:
+    """Generate a normalized prefix string."""
+    if form_feed:
+        return (empty_line * (nl_count - 1)) + "\f" + empty_line
+    return empty_line * nl_count
 
 
 def preceding_leaf(node: Optional[LN]) -> Optional[Leaf]:
@@ -524,7 +531,24 @@ def is_arith_like(node: LN) -> bool:
     }
 
 
-def is_docstring(leaf: Leaf) -> bool:
+def is_docstring(leaf: Leaf, mode: Mode) -> bool:
+    if leaf.type != token.STRING:
+        return False
+
+    prefix = get_string_prefix(leaf.value)
+    if set(prefix).intersection("bBfF"):
+        return False
+
+    if (
+        Preview.unify_docstring_detection in mode
+        and leaf.parent
+        and leaf.parent.type == syms.simple_stmt
+        and not leaf.parent.prev_sibling
+        and leaf.parent.parent
+        and leaf.parent.parent.type == syms.file_input
+    ):
+        return True
+
     if prev_siblings_are(
         leaf.parent, [None, token.NEWLINE, token.INDENT, syms.simple_stmt]
     ):
@@ -718,8 +742,21 @@ def is_multiline_string(leaf: Leaf) -> bool:
     return has_triple_quotes(leaf.value) and "\n" in leaf.value
 
 
+def is_parent_function_or_class(node: Node) -> bool:
+    assert node.type in {syms.suite, syms.simple_stmt}
+    assert node.parent is not None
+    # Note this works for suites / simple_stmts in async def as well
+    return node.parent.type in {syms.funcdef, syms.classdef}
+
+
+def is_function_or_class(node: Node) -> bool:
+    return node.type in {syms.funcdef, syms.classdef, syms.async_funcdef}
+
+
 def is_stub_suite(node: Node) -> bool:
     """Return True if `node` is a suite with a stub body."""
+    if node.parent is not None and not is_parent_function_or_class(node):
+        return False
 
     # If there is a comment, we want to keep it.
     if node.prefix.strip():
@@ -924,3 +961,31 @@ def is_part_of_annotation(leaf: Leaf) -> bool:
             return True
         ancestor = ancestor.parent
     return False
+
+
+def first_leaf(node: LN) -> Optional[Leaf]:
+    """Returns the first leaf of the ancestor node."""
+    if isinstance(node, Leaf):
+        return node
+    elif not node.children:
+        return None
+    else:
+        return first_leaf(node.children[0])
+
+
+def last_leaf(node: LN) -> Optional[Leaf]:
+    """Returns the last leaf of the ancestor node."""
+    if isinstance(node, Leaf):
+        return node
+    elif not node.children:
+        return None
+    else:
+        return last_leaf(node.children[-1])
+
+
+def furthest_ancestor_with_last_leaf(leaf: Leaf) -> LN:
+    """Returns the furthest ancestor that has this leaf node as the last leaf."""
+    node: LN = leaf
+    while node.parent and node.parent.children and node is node.parent.children[-1]:
+        node = node.parent
+    return node

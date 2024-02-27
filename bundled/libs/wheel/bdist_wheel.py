@@ -17,7 +17,6 @@ import warnings
 from email.generator import BytesGenerator, Generator
 from email.policy import EmailPolicy
 from glob import iglob
-from io import BytesIO
 from shutil import rmtree
 from zipfile import ZIP_DEFLATED, ZIP_STORED
 
@@ -117,8 +116,12 @@ def get_abi_tag():
             m = "m"
 
         abi = f"{impl}{tags.interpreter_version()}{d}{m}{u}"
-    elif soabi and impl == "cp":
+    elif soabi and impl == "cp" and soabi.startswith("cpython"):
+        # non-Windows
         abi = "cp" + soabi.split("-")[1]
+    elif soabi and impl == "cp" and soabi.startswith("cp"):
+        # Windows
+        abi = soabi.split("-")[0]
     elif soabi and impl == "pp":
         # we want something like pypy36-pp73
         abi = "-".join(soabi.split("-")[:2])
@@ -194,8 +197,9 @@ class bdist_wheel(Command):
         (
             "compression=",
             None,
-            "zipfile compression (one of: {})"
-            " (default: 'deflated')".format(", ".join(supported_compressions)),
+            "zipfile compression (one of: {})" " (default: 'deflated')".format(
+                ", ".join(supported_compressions)
+            ),
         ),
         (
             "python-tag=",
@@ -463,10 +467,8 @@ class bdist_wheel(Command):
 
         wheelfile_path = os.path.join(wheelfile_base, "WHEEL")
         log.info(f"creating {wheelfile_path}")
-        buffer = BytesIO()
-        BytesGenerator(buffer, maxheaderlen=0).flatten(msg)
         with open(wheelfile_path, "wb") as f:
-            f.write(buffer.getvalue().replace(b"\r\n", b"\r"))
+            BytesGenerator(f, maxheaderlen=0).flatten(msg)
 
     def _ensure_relative(self, path):
         # copied from dir_util, deleted

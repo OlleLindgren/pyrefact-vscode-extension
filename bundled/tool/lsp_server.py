@@ -89,7 +89,7 @@ TOOL_ARGS = []  # default arguments always passed to your tool.
 @LSP_SERVER.feature(lsp.TEXT_DOCUMENT_FORMATTING)
 def formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit] | None:
     """LSP handler for textDocument/formatting request."""
-    document = LSP_SERVER.workspace.get_document(params.text_document.uri)
+    document = LSP_SERVER.workspace.get_text_document(params.text_document.uri)
     edits = _formatting_helper(document)
     if edits:
         return edits
@@ -101,8 +101,8 @@ def formatting(params: lsp.DocumentFormattingParams) -> list[lsp.TextEdit] | Non
 
 @LSP_SERVER.feature(lsp.TEXT_DOCUMENT_RANGE_FORMATTING)
 def range_formatting(params: lsp.DocumentRangeFormattingParams) -> list[lsp.TextEdit] | None:
-    """LSP handler for textDocument/formatting request."""
-    document = LSP_SERVER.workspace.get_document(params.text_document.uri)
+    """LSP handler for textDocument/rangeFormatting request."""
+    document = LSP_SERVER.workspace.get_text_document(params.text_document.uri)
     edits = _formatting_helper(document, params.range)
     if edits:
         return edits

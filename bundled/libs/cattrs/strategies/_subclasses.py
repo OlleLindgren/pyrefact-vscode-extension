@@ -23,11 +23,7 @@ def _has_subclasses(cl: Type, given_subclasses: Tuple[Type, ...]) -> bool:
 def _get_union_type(cl: Type, given_subclasses_tree: Tuple[Type]) -> Optional[Type]:
     actual_subclass_tree = tuple(_make_subclasses_tree(cl))
     class_tree = tuple(set(actual_subclass_tree) & set(given_subclasses_tree))
-    if len(class_tree) >= 2:
-        union_type = Union[class_tree]
-    else:
-        union_type = None
-    return union_type
+    return Union[class_tree] if len(class_tree) >= 2 else None
 
 
 def include_subclasses(
@@ -62,7 +58,7 @@ def include_subclasses(
     # Due to https://github.com/python-attrs/attrs/issues/1047
     collect()
     if subclasses is not None:
-        parent_subclass_tree = (cl,) + subclasses
+        parent_subclass_tree = (cl, *subclasses)
     else:
         parent_subclass_tree = tuple(_make_subclasses_tree(cl))
 
@@ -157,7 +153,8 @@ def _include_subclasses_with_union_strategy(
     overrides: Dict[str, AttributeOverride],
 ):
     """
-    This function is tricky because we're dealing with what is essentially a circular reference.
+    This function is tricky because we're dealing with what is essentially a circular
+    reference.
 
     We need to generate a structure hook for a class that is both:
     * specific for that particular class and its own fields
@@ -175,8 +172,8 @@ def _include_subclasses_with_union_strategy(
     for cl in union_classes:
         # In the first pass, every class gets its own unstructure function according to
         # the overrides.
-        # We just generate the hooks, and do not register them. This allows us to manipulate
-        # the _already_generating set to force runtime dispatch.
+        # We just generate the hooks, and do not register them. This allows us to
+        # manipulate the _already_generating set to force runtime dispatch.
         already_generating.working_set = set(union_classes) - {cl}
         try:
             unstruct_hook = make_dict_unstructure_fn(cl, converter, **overrides)

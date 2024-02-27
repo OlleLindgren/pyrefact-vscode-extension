@@ -502,9 +502,13 @@ def align_variable_names_with_convention(
             if isinstance(node, ast.Name):
                 if node.id == substitute:
                     continue
+                if node.id in preserve:
+                    continue
                 replacement = ast.Name(id=substitute)
             elif isinstance(node, ast.FunctionDef):
                 if node.name == substitute:
+                    continue
+                if node.name in preserve:
                     continue
                 replacement = ast.FunctionDef(
                     name=substitute,
@@ -517,6 +521,8 @@ def align_variable_names_with_convention(
             elif isinstance(node, ast.AsyncFunctionDef):
                 if node.name == substitute:
                     continue
+                if node.name in preserve:
+                    continue
                 replacement = ast.AsyncFunctionDef(
                     name=substitute,
                     args=node.args,
@@ -527,6 +533,8 @@ def align_variable_names_with_convention(
                 )
             elif isinstance(node, ast.ClassDef):
                 if node.name == substitute:
+                    continue
+                if node.name in preserve:
                     continue
                 replacement = ast.ClassDef(
                     name=substitute,
@@ -1458,7 +1466,9 @@ def replace_for_loops_with_dict_comp(source: str) -> str:
             yield value, comp, transaction
             yield n2, None, transaction
         elif core.match_template(value, ast.Dict(values=list, keys={None})):
-            yield value, ast.Dict(keys=value.keys + [None], values=value.values + [comp]), transaction
+            yield value, ast.Dict(
+                keys=value.keys + [None], values=value.values + [comp]
+            ), transaction
             yield n2, None, transaction
         elif core.match_template(value, ast.Dict(values=list, keys=list)):
             yield value, ast.Dict(keys=[None, None], values=[value, comp]), transaction
@@ -2054,20 +2064,24 @@ def implicit_defaultdict(source: str) -> str:
         if subscript_calls and subscript_calls <= {"add", "update"}:
             replacements.extend(loop_replacements.items())
             replacements.extend(zip(loop_removals, itertools.repeat(None)))
-            replacements.append((value, ast.Call(
-                func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
-                args=[ast.Name(id="set")],
-                keywords=[],
-            )))
+            replacements.append((
+                value,
+                ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
+                    args=[ast.Name(id="set")],
+                    keywords=[],
+            ),))
 
         if subscript_calls and subscript_calls <= {"append", "extend"}:
             replacements.extend(loop_replacements.items())
             replacements.extend(zip(loop_removals, itertools.repeat(None)))
-            replacements.append((value, ast.Call(
-                func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
-                args=[ast.Name(id="list")],
-                keywords=[],
-            )))
+            replacements.append((
+                value,
+                ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="collections"), attr="defaultdict"),
+                    args=[ast.Name(id="list")],
+                    keywords=[],
+            ),))
 
         for before, after in replacements:
             yield before, after, transaction
@@ -2507,7 +2521,9 @@ def replace_dict_assign_with_dict_literal(source: str) -> str:
             value=core.Wildcard("value", object, common=False),
     ),]
 
-    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
+    for transaction, (first, *matches) in enumerate(
+        core.walk_sequence(root, *template, expand_last=True)
+    ):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2538,7 +2554,9 @@ def replace_dict_update_with_dict_literal(source: str) -> str:
                 args=[core.Wildcard("other", object, common=False)],
     )),]
 
-    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
+    for transaction, (first, *matches) in enumerate(
+        core.walk_sequence(root, *template, expand_last=True)
+    ):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2567,7 +2585,9 @@ def replace_dictcomp_assign_with_dict_literal(source: str) -> str:
             value=core.Wildcard("value", object, common=False),
     ),]
 
-    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
+    for transaction, (first, *matches) in enumerate(
+        core.walk_sequence(root, *template, expand_last=True)
+    ):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2594,7 +2614,9 @@ def replace_dictcomp_update_with_dict_literal(source: str) -> str:
                 args=[core.Wildcard("other", object, common=False)],
     )),]
 
-    for transaction, (first, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
+    for transaction, (first, *matches) in enumerate(
+        core.walk_sequence(root, *template, expand_last=True)
+    ):
         replacement = ast.Assign(
             targets=[first.target],
             value=ast.Dict(
@@ -2626,7 +2648,9 @@ def replace_setcomp_add_with_union(source: str) -> str:
     {{variable}} = {{something}} | {{{something_else}} for {{target}} in {{iterable}}}
     """
     find = core.compile_template(find, something=(ast.SetComp, ast.Set, ast.BinOp(op=ast.BitOr)))
-    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+    for before, after, template_match in processing.find_replace(
+        source, find, replace, yield_match=True
+    ):
         if isinstance(template_match.root, ast.BinOp):
             if _is_recursive_binop_chain(template_match.root, ast.BitOr):
                 yield before, after
@@ -2641,7 +2665,9 @@ def replace_setcomp_add_with_union(source: str) -> str:
     {{variable}} = {{something}} | set({{something_else}})
     """
     find = core.compile_template(find, something=(ast.SetComp, ast.Set, ast.BinOp(op=ast.BitOr)))
-    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+    for before, after, template_match in processing.find_replace(
+        source, find, replace, yield_match=True
+    ):
         if isinstance(template_match.root, ast.BinOp):
             if _is_recursive_binop_chain(template_match.root, ast.BitOr):
                 yield before, after
@@ -2660,7 +2686,9 @@ def replace_listcomp_append_with_plus(source: str) -> str:
     {{variable}} = {{something}} + [{{something_else}} for {{target}} in {{iterable}}]
     """
     find = core.compile_template(find, something=(ast.ListComp, ast.List, ast.BinOp(op=ast.Add)))
-    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+    for before, after, template_match in processing.find_replace(
+        source, find, replace, yield_match=True
+    ):
         if isinstance(template_match.root, ast.BinOp):
             if _is_recursive_binop_chain(template_match.root, ast.Add):
                 yield before, after
@@ -2675,7 +2703,9 @@ def replace_listcomp_append_with_plus(source: str) -> str:
     {{variable}} = {{something}} + list({{something_else}})
     """
     find = core.compile_template(find, something=(ast.ListComp, ast.List, ast.BinOp(op=ast.Add)))
-    for before, after, template_match in processing.find_replace(source, find, replace, yield_match=True):
+    for before, after, template_match in processing.find_replace(
+        source, find, replace, yield_match=True
+    ):
         if isinstance(template_match.root, ast.BinOp):
             if _is_recursive_binop_chain(template_match.root, ast.Add):
                 yield before, after
@@ -2799,7 +2829,9 @@ def replace_collection_add_update_with_collection_literal(source: str) -> str:
             keywords=[],
     ))
     template = [assign_template, modify_template]
-    for transaction, (node, *matches) in enumerate(core.walk_sequence(root, *template, expand_last=True)):
+    for transaction, (node, *matches) in enumerate(
+        core.walk_sequence(root, *template, expand_last=True)
+    ):
         assigned_value = node.root.value
         other_elts = []
         for m in matches:
@@ -3313,7 +3345,7 @@ def missing_context_manager(source: str) -> str:
     return source
 
 
-def _group_statements_of_type(root: ast.AST, template: ast.AST) -> Sequence[Sequence[ast.AST]]:
+def _group_statements_of_type(root: ast.AST, template: core.Template) -> Sequence[Sequence[ast.AST]]:
     """Get unique groups of imports, such that they're as long as possible, and don't overlap."""
     groups = [
         [m[0] for m in matches]
@@ -3444,6 +3476,31 @@ def _breakout_stacked_imports(source: str) -> str:
     return source
 
 
+@processing.fix
+def _fix_imported_attr_as_self(source: str) -> str:
+    root = core.parse(source)
+
+    template = ast.Import(
+        names=[
+            ast.alias(
+                name=core.Wildcard("name", str),
+                asname=core.Wildcard("asname", str)
+    )])
+    for node, asname, name in core.walk_wildcard(root, template):
+        *names, last = name.split(".")
+        if last == asname:
+            if names:
+                replacement = ast.ImportFrom(
+                    module=".".join(names),
+                    names=[ast.alias(name=last, asname=None)],
+                    level=0,
+                )
+            else:
+                replacement = ast.Import(names=[ast.alias(name=last, asname=None)])
+
+            yield node, replacement
+
+
 def _fix_imported_as_self_or_unsorted(source: str) -> str:
     root = core.parse(source)
 
@@ -3484,6 +3541,7 @@ def fix_duplicate_imports(source: str) -> str:
     source = _fix_duplicate_from_imports(source)
     source = _fix_duplicate_regular_imports(source)
     source = _breakout_stacked_imports(source)
+    source = _fix_imported_attr_as_self(source)
 
     return source
 

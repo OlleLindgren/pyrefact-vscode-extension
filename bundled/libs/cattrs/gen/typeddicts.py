@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import linecache
 import re
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, TypeVar
+import sys
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
-from attr import NOTHING, Attribute
+from attrs import NOTHING, Attribute
 
 try:
     from inspect import get_annotations
 
-    def get_annots(cl):
+    def get_annots(cl) -> dict[str, Any]:
         return get_annotations(cl, eval_str=True)
 
 except ImportError:
     # https://docs.python.org/3/howto/annotations.html#accessing-the-annotations-dict-of-an-object-in-python-3-9-and-older
-    def get_annots(cl):
+    def get_annots(cl) -> dict[str, Any]:
         if isinstance(cl, type):
             ann = cl.__dict__.get("__annotations__", {})
         else:
@@ -29,13 +29,12 @@ except ImportError:
 
 from .._compat import (
     TypedDict,
+    get_full_type_hints,
     get_notrequired_base,
     get_origin,
     is_annotated,
     is_bare,
     is_generic,
-    is_py39_plus,
-    is_py311_plus,
 )
 from .._generics import deep_copy_with
 from ..errors import (
@@ -44,6 +43,7 @@ from ..errors import (
     ForbiddenExtraKeysError,
     StructureHandlerNotFoundError,
 )
+from ..fns import identity
 from . import AttributeOverride
 from ._consts import already_generating, neutral
 from ._generics import generate_mapping
@@ -51,6 +51,8 @@ from ._lc import generate_unique_filename
 from ._shared import find_structure_handler
 
 if TYPE_CHECKING:  # pragma: no cover
+    from typing_extensions import Literal
+
     from cattr.converters import BaseConverter
 
 __all__ = ["make_dict_unstructure_fn", "make_dict_structure_fn"]
@@ -59,18 +61,20 @@ T = TypeVar("T", bound=TypedDict)
 
 
 def make_dict_unstructure_fn(
-    cl: Type[T],
+    cl: type[T],
     converter: BaseConverter,
     _cattrs_use_linecache: bool = True,
     **kwargs: AttributeOverride,
-) -> Callable[[T], Dict[str, Any]]:
+) -> Callable[[T], dict[str, Any]]:
     """
     Generate a specialized dict unstructuring function for a TypedDict.
 
     :param cl: A `TypedDict` class.
     :param converter: A Converter instance to use for unstructuring nested fields.
-    :param kwargs: A mapping of field names to an `AttributeOverride`, for customization.
-    :param _cattrs_detailed_validation: Whether to store the generated code in the _linecache_, for easier debugging and better stack traces.
+    :param kwargs: A mapping of field names to an `AttributeOverride`, for
+        customization.
+    :param _cattrs_detailed_validation: Whether to store the generated code in the
+        _linecache_, for easier debugging and better stack traces.
     """
     origin = get_origin(cl)
     attrs = _adapted_fields(origin or cl)  # type: ignore
@@ -105,8 +109,7 @@ def make_dict_unstructure_fn(
         already_generating.working_set = working_set
     if cl in working_set:
         raise RecursionError()
-    else:
-        working_set.add(cl)
+    working_set.add(cl)
 
     try:
         # We want to short-circuit in certain cases and return the identity
@@ -139,14 +142,14 @@ def make_dict_unstructure_fn(
                 except RecursionError:
                     # There's a circular reference somewhere down the line
                     handler = converter.unstructure
-            is_identity = handler == converter._unstructure_identity
+            is_identity = handler == identity
             if not is_identity:
                 break
         else:
             # We've not broken the loop.
-            return converter._unstructure_identity
+            return identity
 
-        for a in attrs:
+        for ix, a in enumerate(attrs):
             attr_name = a.name
             override = kwargs.get(attr_name, neutral)
             if override.omit:
@@ -186,10 +189,10 @@ def make_dict_unstructure_fn(
                         # There's a circular reference somewhere down the line
                         handler = converter.unstructure
 
-            is_identity = handler == converter._unstructure_identity
+            is_identity = handler == identity
 
             if not is_identity:
-                unstruct_handler_name = f"__c_unstr_{attr_name}"
+                unstruct_handler_name = f"__c_unstr_{ix}"
                 globs[unstruct_handler_name] = handler
                 internal_arg_parts[unstruct_handler_name] = handler
                 invoke = f"{unstruct_handler_name}(instance['{attr_name}'])"
@@ -213,45 +216,51 @@ def make_dict_unstructure_fn(
         for k, v in internal_arg_parts.items():
             globs[k] = v
 
-        total_lines = (
-            [f"def {fn_name}(instance{internal_arg_line}):"]
-            + ["  res = instance.copy()"]
-            + lines
-            + ["  return res"]
-        )
+        total_lines = [
+            f"def {fn_name}(instance{internal_arg_line}):",
+            "  res = instance.copy()",
+            *lines,
+            "  return res",
+        ]
         script = "\n".join(total_lines)
 
         fname = generate_unique_filename(
-            cl, "unstructure", reserve=_cattrs_use_linecache
+            cl, "unstructure", lines=total_lines if _cattrs_use_linecache else []
         )
 
         eval(compile(script, fname, "exec"), globs)
-
-        fn = globs[fn_name]
-        if _cattrs_use_linecache:
-            linecache.cache[fname] = len(script), None, total_lines, fname
     finally:
         working_set.remove(cl)
+        if not working_set:
+            del already_generating.working_set
 
-    return fn
+    return globs[fn_name]
 
 
 def make_dict_structure_fn(
     cl: Any,
     converter: BaseConverter,
-    _cattrs_forbid_extra_keys: bool = False,
+    _cattrs_forbid_extra_keys: bool | Literal["from_converter"] = "from_converter",
     _cattrs_use_linecache: bool = True,
-    _cattrs_detailed_validation: bool = True,
+    _cattrs_detailed_validation: bool | Literal["from_converter"] = "from_converter",
     **kwargs: AttributeOverride,
-) -> Callable[[Dict, Any], Any]:
+) -> Callable[[dict, Any], Any]:
     """Generate a specialized dict structuring function for typed dicts.
 
     :param cl: A `TypedDict` class.
     :param converter: A Converter instance to use for structuring nested fields.
-    :param kwargs: A mapping of field names to an `AttributeOverride`, for customization.
-    :param _cattrs_detailed_validation: Whether to use a slower mode that produces more detailed errors.
-    :param _cattrs_forbid_extra_keys: Whether the structuring function should raise a `ForbiddenExtraKeysError` if unknown keys are encountered.
-    :param _cattrs_detailed_validation: Whether to store the generated code in the _linecache_, for easier debugging and better stack traces.
+    :param kwargs: A mapping of field names to an `AttributeOverride`, for
+        customization.
+    :param _cattrs_detailed_validation: Whether to use a slower mode that produces
+        more detailed errors.
+    :param _cattrs_forbid_extra_keys: Whether the structuring function should raise a
+        `ForbiddenExtraKeysError` if unknown keys are encountered.
+    :param _cattrs_detailed_validation: Whether to store the generated code in the
+        _linecache_, for easier debugging and better stack traces.
+
+    ..  versionchanged:: 23.2.0
+        The `_cattrs_forbid_extra_keys` and `_cattrs_detailed_validation` parameters
+        take their values from the given converter by default.
     """
 
     mapping = {}
@@ -276,12 +285,12 @@ def make_dict_structure_fn(
 
     # We have generic parameters and need to generate a unique name for the function
     for p in getattr(cl, "__parameters__", ()):
-        # This is nasty, I am not sure how best to handle `typing.List[str]` or `TClass[int, int]` as a parameter type here
         try:
             name_base = mapping[p.__name__]
         except KeyError:
+            pn = p.__name__
             raise StructureHandlerNotFoundError(
-                f"Missing type for generic argument {p.__name__}, specify it when structuring.",
+                f"Missing type for generic argument {pn}, specify it when structuring.",
                 p,
             ) from None
         name = getattr(name_base, "__name__", None) or str(name_base)
@@ -300,6 +309,12 @@ def make_dict_structure_fn(
     req_keys = _required_keys(cl)
 
     allowed_fields = set()
+    if _cattrs_forbid_extra_keys == "from_converter":
+        # BaseConverter doesn't have it so we're careful.
+        _cattrs_forbid_extra_keys = getattr(converter, "forbid_extra_keys", False)
+    if _cattrs_detailed_validation == "from_converter":
+        _cattrs_detailed_validation = converter.detailed_validation
+
     if _cattrs_forbid_extra_keys:
         globs["__c_a"] = allowed_fields
         globs["__c_feke"] = ForbiddenExtraKeysError
@@ -310,7 +325,7 @@ def make_dict_structure_fn(
         lines.append("  errors = []")
         internal_arg_parts["__c_cve"] = ClassValidationError
         internal_arg_parts["__c_avn"] = AttributeValidationNote
-        for a in attrs:
+        for ix, a in enumerate(attrs):
             an = a.name
             attr_required = an in req_keys
             override = kwargs.get(an, neutral)
@@ -335,7 +350,7 @@ def make_dict_structure_fn(
             else:
                 handler = find_structure_handler(a, t, converter)
 
-            struct_handler_name = f"__c_structure_{an}"
+            struct_handler_name = f"__c_structure_{ix}"
             internal_arg_parts[struct_handler_name] = handler
 
             kn = an if override.rename is None else override.rename
@@ -346,15 +361,17 @@ def make_dict_structure_fn(
                 i = f"{i}  "
             lines.append(f"{i}try:")
             i = f"{i}  "
-            type_name = f"__c_type_{an}"
-            internal_arg_parts[type_name] = t
+
+            tn = f"__c_type_{ix}"
+            internal_arg_parts[tn] = t
+
             if handler:
                 if handler == converter._structure_call:
                     internal_arg_parts[struct_handler_name] = t
                     lines.append(f"{i}res['{an}'] = {struct_handler_name}(o['{kn}'])")
                 else:
                     lines.append(
-                        f"{i}res['{an}'] = {struct_handler_name}(o['{kn}'], {type_name})"
+                        f"{i}res['{an}'] = {struct_handler_name}(o['{kn}'], {tn})"
                     )
             else:
                 lines.append(f"{i}res['{an}'] = o['{kn}']")
@@ -364,7 +381,7 @@ def make_dict_structure_fn(
             lines.append(f"{i}except Exception as e:")
             i = f"{i}  "
             lines.append(
-                f'{i}e.__notes__ = getattr(e, \'__notes__\', []) + [__c_avn("Structuring typeddict {cl.__qualname__} @ attribute {an}", "{an}", __c_type_{an})]'
+                f'{i}e.__notes__ = [*getattr(e, \'__notes__\', []), __c_avn("Structuring typeddict {cl.__qualname__} @ attribute {an}", "{an}", {tn})]'
             )
             lines.append(f"{i}errors.append(e)")
 
@@ -382,14 +399,14 @@ def make_dict_structure_fn(
         non_required = []
 
         # The first loop deals with required args.
-        for a in attrs:
+        for ix, a in enumerate(attrs):
             an = a.name
             attr_required = an in req_keys
             override = kwargs.get(an, neutral)
             if override.omit:
                 continue
             if not attr_required:
-                non_required.append(a)
+                non_required.append((ix, a))
                 continue
 
             t = a.type
@@ -414,7 +431,7 @@ def make_dict_structure_fn(
             allowed_fields.add(kn)
 
             if handler:
-                struct_handler_name = f"__c_structure_{an}"
+                struct_handler_name = f"__c_structure_{ix}"
                 internal_arg_parts[struct_handler_name] = handler
                 if handler == converter._structure_call:
                     internal_arg_parts[struct_handler_name] = t
@@ -422,10 +439,10 @@ def make_dict_structure_fn(
                         f"  res['{an}'] = {struct_handler_name}(o['{kn}'])"
                     )
                 else:
-                    type_name = f"__c_type_{an}"
-                    internal_arg_parts[type_name] = t
+                    tn = f"__c_type_{ix}"
+                    internal_arg_parts[tn] = t
                     invocation_line = (
-                        f"  res['{an}'] = {struct_handler_name}(o['{kn}'], {type_name})"
+                        f"  res['{an}'] = {struct_handler_name}(o['{kn}'], {tn})"
                     )
             else:
                 invocation_line = f"  res['{an}'] = o['{kn}']"
@@ -436,7 +453,7 @@ def make_dict_structure_fn(
 
         # The second loop is for optional args.
         if non_required:
-            for a in non_required:
+            for ix, a in non_required:
                 an = a.name
                 override = kwargs.get(an, neutral)
                 t = a.type
@@ -458,7 +475,7 @@ def make_dict_structure_fn(
                 else:
                     handler = converter.structure
 
-                struct_handler_name = f"__c_structure_{an}"
+                struct_handler_name = f"__c_structure_{ix}"
                 internal_arg_parts[struct_handler_name] = handler
 
                 ian = an
@@ -472,10 +489,10 @@ def make_dict_structure_fn(
                             f"    res['{ian}'] = {struct_handler_name}(o['{kn}'])"
                         )
                     else:
-                        type_name = f"__c_type_{an}"
-                        internal_arg_parts[type_name] = t
+                        tn = f"__c_type_{ix}"
+                        internal_arg_parts[tn] = t
                         post_lines.append(
-                            f"    res['{ian}'] = {struct_handler_name}(o['{kn}'], {type_name})"
+                            f"    res['{ian}'] = {struct_handler_name}(o['{kn}'], {tn})"
                         )
                 else:
                     post_lines.append(f"    res['{ian}'] = o['{kn}']")
@@ -494,26 +511,37 @@ def make_dict_structure_fn(
     for k, v in internal_arg_parts.items():
         globs[k] = v
 
-    total_lines = (
-        [f"def {fn_name}(o, _, *, {internal_arg_line}):"]
-        + lines
-        + post_lines
-        + ["  return res"]
+    total_lines = [
+        f"def {fn_name}(o, _, {internal_arg_line}):",
+        *lines,
+        *post_lines,
+        "  return res",
+    ]
+
+    script = "\n".join(total_lines)
+    fname = generate_unique_filename(
+        cl, "structure", lines=total_lines if _cattrs_use_linecache else []
     )
 
-    fname = generate_unique_filename(cl, "structure", reserve=_cattrs_use_linecache)
-    script = "\n".join(total_lines)
     eval(compile(script, fname, "exec"), globs)
-    if _cattrs_use_linecache:
-        linecache.cache[fname] = len(script), None, total_lines, fname
-
     return globs[fn_name]
 
 
-def _adapted_fields(cls: Any) -> List[Attribute]:
+def _adapted_fields(cls: Any) -> list[Attribute]:
     annotations = get_annots(cls)
+    hints = get_full_type_hints(cls)
     return [
-        Attribute(n, NOTHING, None, False, False, False, False, False, type=a)
+        Attribute(
+            n,
+            NOTHING,
+            None,
+            False,
+            False,
+            False,
+            False,
+            False,
+            type=hints[n] if n in hints else annotations[n],
+        )
         for n, a in annotations.items()
     ]
 
@@ -526,71 +554,71 @@ def _is_extensions_typeddict(cls) -> bool:
     )
 
 
-if is_py311_plus:
+if sys.version_info >= (3, 11):
 
-    def _required_keys(cls: Type) -> set[str]:
+    def _required_keys(cls: type) -> set[str]:
         return cls.__required_keys__
 
-elif is_py39_plus:
+elif sys.version_info >= (3, 9):
     from typing_extensions import Annotated, NotRequired, Required, get_args
 
-    def _required_keys(cls: Type) -> set[str]:
+    def _required_keys(cls: type) -> set[str]:
         if _is_extensions_typeddict(cls):
             return cls.__required_keys__
-        else:
-            # We vendor a part of the typing_extensions logic for
-            # gathering required keys. *sigh*
-            own_annotations = cls.__dict__.get("__annotations__", {})
-            required_keys = set()
-            for base in cls.__mro__[1:]:
-                required_keys |= _required_keys(base)
-            for key in getattr(cls, "__required_keys__", []):
-                annotation_type = own_annotations[key]
-                annotation_origin = get_origin(annotation_type)
-                if annotation_origin is Annotated:
-                    annotation_args = get_args(annotation_type)
-                    if annotation_args:
-                        annotation_type = annotation_args[0]
-                        annotation_origin = get_origin(annotation_type)
 
-                if annotation_origin is Required:
-                    required_keys.add(key)
-                elif annotation_origin is NotRequired:
-                    pass
-                elif getattr(cls, "__total__"):
-                    required_keys.add(key)
-            return required_keys
+        # We vendor a part of the typing_extensions logic for
+        # gathering required keys. *sigh*
+        own_annotations = cls.__dict__.get("__annotations__", {})
+        required_keys = set()
+        for base in cls.__mro__[1:]:
+            required_keys |= _required_keys(base)
+        for key in getattr(cls, "__required_keys__", []):
+            annotation_type = own_annotations[key]
+            annotation_origin = get_origin(annotation_type)
+            if annotation_origin is Annotated:
+                annotation_args = get_args(annotation_type)
+                if annotation_args:
+                    annotation_type = annotation_args[0]
+                    annotation_origin = get_origin(annotation_type)
+
+            if annotation_origin is Required:
+                required_keys.add(key)
+            elif annotation_origin is NotRequired:
+                pass
+            elif cls.__total__:
+                required_keys.add(key)
+        return required_keys
 
 else:
     from typing_extensions import Annotated, NotRequired, Required, get_args
 
     # On 3.8, typing.TypedDicts do not have __required_keys__.
 
-    def _required_keys(cls: Type) -> set[str]:
+    def _required_keys(cls: type) -> set[str]:
         if _is_extensions_typeddict(cls):
             return cls.__required_keys__
-        else:
-            own_annotations = cls.__dict__.get("__annotations__", {})
-            required_keys = set()
-            superclass_keys = set()
-            for base in cls.__mro__[1:]:
-                required_keys |= _required_keys(base)
-                superclass_keys |= base.__dict__.get("__annotations__", {}).keys()
-            for key in own_annotations:
-                if key in superclass_keys:
-                    continue
-                annotation_type = own_annotations[key]
-                annotation_origin = get_origin(annotation_type)
-                if annotation_origin is Annotated:
-                    annotation_args = get_args(annotation_type)
-                    if annotation_args:
-                        annotation_type = annotation_args[0]
-                        annotation_origin = get_origin(annotation_type)
 
-                if annotation_origin is Required:
-                    required_keys.add(key)
-                elif annotation_origin is NotRequired:
-                    pass
-                elif getattr(cls, "__total__"):
-                    required_keys.add(key)
-            return required_keys
+        own_annotations = cls.__dict__.get("__annotations__", {})
+        required_keys = set()
+        superclass_keys = set()
+        for base in cls.__mro__[1:]:
+            required_keys |= _required_keys(base)
+            superclass_keys |= base.__dict__.get("__annotations__", {}).keys()
+        for key in own_annotations:
+            if key in superclass_keys:
+                continue
+            annotation_type = own_annotations[key]
+            annotation_origin = get_origin(annotation_type)
+            if annotation_origin is Annotated:
+                annotation_args = get_args(annotation_type)
+                if annotation_args:
+                    annotation_type = annotation_args[0]
+                    annotation_origin = get_origin(annotation_type)
+
+            if annotation_origin is Required:
+                required_keys.add(key)
+            elif annotation_origin is NotRequired:
+                pass
+            elif cls.__total__:
+                required_keys.add(key)
+        return required_keys

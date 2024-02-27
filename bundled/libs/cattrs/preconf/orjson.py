@@ -1,14 +1,16 @@
 """Preconfigured converters for orjson."""
 from base64 import b85decode, b85encode
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
-from typing import Any, Type, TypeVar
+from typing import Any, Type, TypeVar, Union
 
 from orjson import dumps, loads
 
 from cattrs._compat import AbstractSet, is_mapping
 
 from ..converters import BaseConverter, Converter
+from ..fns import identity
+from ..strategies import configure_union_passthrough
 
 T = TypeVar("T")
 
@@ -17,7 +19,7 @@ class OrjsonConverter(Converter):
     def dumps(self, obj: Any, unstructure_as: Any = None, **kwargs: Any) -> bytes:
         return dumps(self.unstructure(obj, unstructure_as=unstructure_as), **kwargs)
 
-    def loads(self, data: bytes, cl: Type[T]) -> T:
+    def loads(self, data: Union[bytes, bytearray, memoryview, str], cl: Type[T]) -> T:
         return self.structure(loads(data), cl)
 
 
@@ -38,6 +40,8 @@ def configure_converter(converter: BaseConverter):
 
     converter.register_unstructure_hook(datetime, lambda v: v.isoformat())
     converter.register_structure_hook(datetime, lambda v, _: datetime.fromisoformat(v))
+    converter.register_unstructure_hook(date, lambda v: v.isoformat())
+    converter.register_structure_hook(date, lambda v, _: date.fromisoformat(v))
 
     def gen_unstructure_mapping(cl: Any, unstructure_to=None):
         key_handler = str
@@ -54,7 +58,7 @@ def configure_converter(converter: BaseConverter):
                 # In that case, we want to use the override.
 
                 kh = converter._unstructure_func.dispatch(args[0])
-                if kh != converter._unstructure_identity:
+                if kh != identity:
                     key_handler = kh
 
         return converter.gen_unstructure_mapping(
@@ -64,6 +68,7 @@ def configure_converter(converter: BaseConverter):
     converter._unstructure_func.register_func_list(
         [(is_mapping, gen_unstructure_mapping, True)]
     )
+    configure_union_passthrough(Union[str, bool, int, float, None], converter)
 
 
 def make_converter(*args: Any, **kwargs: Any) -> OrjsonConverter:

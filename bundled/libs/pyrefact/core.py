@@ -8,9 +8,24 @@ import itertools
 import re
 import textwrap
 import traceback
-from typing import Collection, Iterable, List, Mapping, NamedTuple, Sequence, Set, Tuple
+from types import MappingProxyType
+from typing import Any, Collection, Iterable, List, Mapping, NamedTuple, Sequence, Set, Tuple, TypeVar, Union
 
 from pyrefact import constants, formatting, logs as logger
+
+
+Template = TypeVar("Template", bound=Union[ast.AST, type, Collection[Union[ast.AST, type]]])
+DEFAULT_IGNORE = frozenset(("lineno", "end_lineno", "col_offset", "end_col_offset"))
+
+__all__ = [
+    "Wildcard",
+    "ZeroOrOne",
+    "ZeroOrMany",
+    "OneOrMany",
+    "match_template",
+    "Range",
+    "Match",
+]
 
 
 def unparse(node: ast.AST | str) -> str:
@@ -69,7 +84,40 @@ class Wildcard(ast.AST):
         if self.template is not object and self.common is True:
             return f"Wildcard({self.name!r}, {self.template!r})"
 
-        return f"Wildcard({self.name!r}, {self.value!r}, {self.common!r})"
+        return f"Wildcard({self.name!r}, {self.template!r}, {self.common!r})"
+
+
+@dataclasses.dataclass(eq=True, frozen=True)
+class ZeroOrOne(ast.AST):
+    """Matches zero or one of a template"""
+
+    template: object
+
+    @staticmethod
+    def __iter__() -> Iterable:
+        yield from ()
+
+
+@dataclasses.dataclass(eq=True, frozen=True)
+class ZeroOrMany(ast.AST):
+    """Matches zero or many of a template"""
+
+    template: object
+
+    @staticmethod
+    def __iter__() -> Iterable:
+        yield from ()
+
+
+@dataclasses.dataclass(eq=True, frozen=True)
+class OneOrMany(ast.AST):
+    """Matches one or many of a template"""
+
+    template: object
+
+    @staticmethod
+    def __iter__() -> Iterable:
+        yield from ()
 
 
 @functools.lru_cache(maxsize=10000)
@@ -92,7 +140,7 @@ def _all_fields_consistent(
     return True
 
 
-def merge_matches(root: ast.AST, matches: Iterable[Tuple[object]]) -> Tuple[object]:
+def merge_matches(root: ast.AST, matches: Iterable[Tuple[Any]]) -> Tuple[ast.AST, ...]:
     namedtuple_matches = []
     for match in matches:
         if not match:
@@ -128,7 +176,7 @@ def _match_tuple(node: ast.AST, template: Tuple[ast.AST, ...], ignore: Collectio
     return ()
 
 
-def _match_set(node: ast.AST, template: Set[ast.AST], ignore: Collection[str]) -> Tuple:
+def _match_set(node: ast.AST, template: Set[ast.AST], ignore: Collection[str]) -> Tuple[ast.AST, ...]:
     if not isinstance(node, list):
         return ()
 
@@ -136,30 +184,84 @@ def _match_set(node: ast.AST, template: Set[ast.AST], ignore: Collection[str]) -
     return merge_matches(node, matches)
 
 
-def _match_list(node: ast.AST, template: List[ast.AST], ignore: Collection[str]) -> Tuple:
-    if not isinstance(node, list):
-        return ()
-    if len(node) != len(template):
+def _iter_template_permutations(template: List[Template], length: int) -> Iterable[List[Template]]:
+    node_counts = {}
+    for i, node in enumerate(template):
+        if isinstance(node, ZeroOrOne):
+            node_counts[(i, node.template)] = (0, 1)
+        elif isinstance(node, ZeroOrMany):
+            node_counts[(i, node.template)] = (0, length)
+        elif isinstance(node, OneOrMany):
+            node_counts[(i, node.template)] = (1, length)
+        else:
+            node_counts[(i, node)] = (1, 1)
+
+    slack = length - sum(min_count for min_count, _ in node_counts.values())
+    if slack < 0:
+        return
+
+    for i, node in enumerate(template):
+        if isinstance(node, ZeroOrMany):
+            node_counts[i, node.template] = (0, slack)
+        if isinstance(node, OneOrMany):
+            node_counts[i, node.template] = (1, 1 + slack)
+
+    node_counts = {
+        key: range(min_count, max_count + 1) for key, (min_count, max_count) in node_counts.items()
+    }
+    keys = node_counts.keys()
+    permutations = itertools.product(*(node_counts[key] for key in keys))
+    permutations = (p for p in permutations if sum(p) == length)
+
+    for permutation in permutations:
+        yield sum(([key[1]] * count for key, count in zip(keys, permutation)), [])
+
+
+def _match_list(nodes: ast.AST, template: List[ast.AST], ignore: Collection[str]) -> Tuple[ast.AST, ...]:
+    if not isinstance(nodes, list):
         return ()
 
-    matches = (
-        match_template(child, template_child, ignore=ignore)
-        for child, template_child in zip(node, template)
-    )
-    return merge_matches(node, matches)
+    min_nodes_length = max_nodes_length = len(template)
+    for n in template:
+        if isinstance(n, ZeroOrOne):
+            min_nodes_length -= 1
+        if isinstance(n, ZeroOrMany):
+            min_nodes_length -= 1
+            max_nodes_length = float("inf")
+        if isinstance(n, OneOrMany):
+            max_nodes_length = float("inf")
+
+    if not min_nodes_length <= len(nodes) <= max_nodes_length:
+        return ()
+
+    permutations = _iter_template_permutations(template, len(nodes))
+
+    for permutation in permutations:
+        matches = (
+            match_template(child, template_child, ignore=ignore)
+            for child, template_child in zip(nodes, permutation)
+        )
+        merged = merge_matches(permutation, matches)
+        if merged:
+            return merged
+
+    return ()
 
 
 def _match_wildcard(node: ast.AST, template: Wildcard, ignore: Collection[str]) -> Tuple:
+
+    # Special case for ellipsis {{...}} pattern, which matches everything.
+    if template.name == "Ellipsis_anything" and template.template is object:
+        return (node,)
+
     namedtuple_type = _make_match_type((template.name,))
     template_match = match_template(node, template.template, ignore=ignore)
     return namedtuple_type(template_match[0]) if len(template_match) == 1 else ()
 
 
 def _match_template_vars(
-    node: ast.AST,
-    template: ast.AST,
-    ignore: Collection[str] = frozenset(("lineno", "end_lineno", "col_offset", "end_col_offset")),
-) -> Tuple:
+    node: ast.AST, template: ast.AST, ignore: Collection[str] = DEFAULT_IGNORE,
+) -> Tuple[ast.AST, ...]:
     t_vars = vars(template)
     n_vars = vars(node)
 
@@ -170,7 +272,8 @@ def _match_template_vars(
             return ()
 
     matches = (
-        match_template(n_vars[key], t_vars[key], ignore=ignore) for key in t_vars.keys() - ignore
+        match_template(n_vars[key], t_vars[key], ignore=ignore)
+        for key in t_vars.keys() - ignore
     )
     return merge_matches(node, matches)
 
@@ -185,10 +288,8 @@ def _isinstance_cache(obj: object, types: type | Tuple[type, ...]) -> bool:
 
 
 def match_template(
-    node: ast.AST,
-    template: ast.AST,
-    ignore: Collection[str] = frozenset(("lineno", "end_lineno", "col_offset", "end_col_offset")),
-) -> Tuple:
+    node: ast.AST, template: Template, ignore: Collection[str] = DEFAULT_IGNORE,
+) -> Tuple[ast.AST, ...]:
     """Match a node against a provided ast template.
 
     Args:
@@ -269,7 +370,7 @@ def match_template(
 
 
 @functools.lru_cache(maxsize=100)
-def parse(source_code: str) -> ast.AST:
+def parse(source_code: str) -> ast.Module:
     """Parse python source code and cache
 
     Args:
@@ -289,17 +390,20 @@ def parse(source_code: str) -> ast.AST:
 
 
 @functools.lru_cache(maxsize=100)
-def _group_nodes_in_scope(scope: ast.AST) -> Mapping[ast.AST, Sequence[ast.AST]]:
+def _group_nodes_in_scope(scope: ast.AST) -> Mapping[type, Sequence[ast.AST]]:
     node_types = collections.defaultdict(list)
     for node in ast.walk(scope):
         node_types[type(node)].append(node)
 
-    return node_types
+    for key in node_types:
+        node_types[key] = tuple(node_types[key])
+
+    return MappingProxyType(node_types)
 
 
 def walk_wildcard(
-    scope: ast.AST, node_template: ast.AST | Tuple[ast.AST, ...], ignore: Collection[str] = ()
-) -> Sequence[Tuple[ast.AST, ...]]:
+    scope: ast.AST, node_template: Template, ignore: Collection[str] = ()
+) -> Iterable[Tuple[ast.AST, ...]]:
     """Iterate over all nodes in scope that match a particular type or template.
 
     The `node_template` argument supports the same syntax as in match_template().
@@ -330,9 +434,7 @@ def walk_wildcard(
                     yield template_match
 
 
-def walk(
-    scope: ast.AST, node_template: ast.AST | Tuple[ast.AST, ...], ignore: Collection[str] = ()
-) -> Sequence[ast.AST]:
+def walk(scope: ast.AST, template: Template, ignore: Collection[str] = ()) -> Iterable[ast.AST]:
     """Iterate over all nodes in scope that match a particular type or template.
 
     The `node_template` argument supports the same syntax as in match_template(), but
@@ -346,18 +448,18 @@ def walk(
     Returns:
         Sequence[ast.AST]: All nodes in scope of that type
     """
-    for node, *_ in walk_wildcard(scope, node_template, ignore=ignore):
+    for node, *_ in walk_wildcard(scope, template, ignore=ignore):
         yield node
 
 
 def _iter_wildcards(
-    template: ast.AST, recursion_blacklist: Collection = None
+    template: Template, recursion_blacklist: Set = frozenset()
 ) -> Iterable[Wildcard]:
     if recursion_blacklist is None:
         recursion_blacklist = set()
     if id(template) in recursion_blacklist:
         return
-    recursion_blacklist = set.union(recursion_blacklist, {id(template)})
+    recursion_blacklist = {id(template)} | recursion_blacklist
     if isinstance(template, Wildcard):
         yield template
         return
@@ -375,8 +477,8 @@ def _iter_wildcards(
 
 
 def walk_sequence(
-    scope: ast.Module, *templates: ast.AST, expand_first: bool = False, expand_last: bool = False
-) -> Iterable[Sequence[ast.AST]]:
+    scope: ast.Module, *templates: Template, expand_first: bool = False, expand_last: bool = False
+) -> Iterable[Tuple[ast.AST]]:
     """Iterate over all sequences of nodes in scope that match a sequence of templates."""
     uncommon = set()
     for node in walk(
@@ -441,11 +543,9 @@ def walk_sequence(
                 yield tuple(matches)
 
 
-def filter_nodes(
-    nodes: Iterable[ast.AST], node_type: ast.AST | Sequence[ast.AST]
-) -> Sequence[ast.AST]:
+def filter_nodes(nodes: Iterable[ast.AST], template: Template) -> Iterable[ast.AST]:
     for node in nodes:
-        if match_template(node, node_type):
+        if match_template(node, template):
             yield node
 
 
@@ -657,6 +757,70 @@ class Range(NamedTuple):
         return self.overlaps(other)
 
 
+@dataclasses.dataclass(frozen=True, eq=True, order=True)
+class Match:
+    span: Range
+    source: str
+    groups: Tuple[ast.AST, ...]
+
+    @property
+    def start(self) -> int:
+        return self.span.start
+
+    @property
+    def end(self) -> int:
+        return self.span.end
+
+    @property
+    def string(self) -> str:
+        return self.source[self.start : self.end]
+
+    @property
+    def root(self) -> ast.AST:
+        return self.groups[0]
+
+    def _lineno_col_offset(self) -> Tuple[int, int]:
+        line_start_charnos = _get_line_start_charnos(self.source)
+        for lineno, start_charno in enumerate(line_start_charnos[1:], start=1):
+            if self.start < start_charno:
+                col_offset = self.start - line_start_charnos[lineno - 1]
+                return lineno, col_offset
+
+        return len(line_start_charnos), self.start - line_start_charnos[-1]
+
+    @property
+    def lineno(self) -> int:
+        lineno, _ = self._lineno_col_offset()
+
+        return lineno
+
+    @property
+    def col_offset(self) -> int:
+        _, col_offset = self._lineno_col_offset()
+
+        return col_offset
+
+
+class _Position(NamedTuple):
+    lineno: int
+    col_offset: int
+    end_lineno: int
+    end_col_offset: int
+
+
+def _get_position(node: ast.AST) -> _Position:
+    lineno = getattr(node, "lineno", 1)
+    col_offset = getattr(node, "col_offset", 0)
+    end_lineno = getattr(node, "end_lineno", lineno)
+    end_col_offset = getattr(node, "end_col_offset", col_offset)
+    return _Position(
+        lineno,
+        col_offset,
+        end_lineno,
+        end_col_offset,
+    )
+
+
 def get_charnos(node: ast.AST, source: str, keep_first_indent: bool = False) -> Range:
     """Get start and end character numbers in source code from ast node.
 
@@ -669,15 +833,18 @@ def get_charnos(node: ast.AST, source: str, keep_first_indent: bool = False) -> 
     """
     line_start_charnos = _get_line_start_charnos(source)
     if match_template(node, ast.AST(decorator_list=list)) and node.decorator_list:
-        start = min(node.decorator_list, key=lambda n: (n.lineno, n.col_offset))
+        start = min(node.decorator_list, key=_get_position)
     else:
         start = node
 
-    start_charno = line_start_charnos[start.lineno - 1] + start.col_offset
+    start_position = _get_position(start)
+    node_position = _get_position(node)
+
+    start_charno = line_start_charnos[start_position.lineno - 1] + start_position.col_offset
     if getattr(node, "end_lineno", None) is None:
         return Range(start_charno, start_charno)
 
-    end_charno = line_start_charnos[node.end_lineno - 1] + node.end_col_offset
+    end_charno = line_start_charnos[node_position.end_lineno - 1] + node_position.end_col_offset
 
     code = source[start_charno:end_charno]
     if code[0] == " ":
@@ -890,6 +1057,9 @@ class _NameWildcardTransformer(ast.NodeTransformer):
         if isinstance(node, Wildcard):
             template = self.visit(node.template)
             node = Wildcard(node.name, template, node.common)
+        elif isinstance(node, (ZeroOrOne, ZeroOrMany, OneOrMany)):
+            template = self.visit(node.template)
+            node = type(node)(template)
         elif isinstance(node, tuple):
             node = tuple(self.visit(child) for child in node)
         elif isinstance(node, set):
@@ -897,6 +1067,8 @@ class _NameWildcardTransformer(ast.NodeTransformer):
         elif isinstance(node, list):
             node = [self.visit(child) for child in node]
         elif isinstance(node, type):
+            return node
+        elif node is None or node is True or node is False:
             return node
         else:
             node = super().visit(node)
@@ -933,7 +1105,11 @@ class _NameWildcardTransformer(ast.NodeTransformer):
         return type(node)(**node_vars)
 
     def visit_arg(self, node):
-        return self.name_wildcard_mapping.get(node.arg, node)
+        arg = self.name_wildcard_mapping.get(node.arg, node.arg)
+        annotation = self.visit(node.annotation)
+
+        new_node = ast.arg(arg=arg, annotation=annotation)
+        return ast.copy_location(new_node, node)
 
     def visit_Name(self, node):
         return self.name_wildcard_mapping.get(node.id, node)
@@ -950,8 +1126,100 @@ class _NameWildcardTransformer(ast.NodeTransformer):
         if (new_name, new_asname) == (node.name, node.asname):
             return node
 
-        new_node = ast.alias(name=new_name, asname=new_asname)
+        # NOTE Here we unfortunately have to create a bit of counterintuitiveness.
+        # (1) If we want consistency between:
+        #   from module import {{name}} as {{asname}}
+        #   from module import {{name}}
+        # then we have to put the wildcard/wrapper around the name and asname
+        # individually.
+        # (2) If we want consistency between
+        #   from module import {{name}}
+        #   from module import {{name+}}
+        # then we have to put the wildcard/wrapper around the whole alias.
+        # I choose consistency in case (1), and to support (2) despite the slight
+        # inconsistency.
+        if isinstance(new_name, (ZeroOrOne, ZeroOrMany, OneOrMany)):
+            # To support mixed asname/no asname on the same ImportFrom, we match
+            # both in the case where new_asname is None.
+            if new_asname is None:
+                new_asname = object
+            new_node = type(new_name)(
+                template=ast.alias(
+                    name=new_name.template,
+                    asname=new_asname,
+                )
+            )
+
+        else:
+            new_node = ast.alias(name=new_name, asname=new_asname)
+
         return ast.copy_location(new_node, node)
+
+    def visit_ImportFrom(self, node):
+        new_module = self.name_wildcard_mapping.get(node.module, node.module)
+        new_names = [self.visit(child) for child in node.names]
+        new_node = ast.ImportFrom(
+            module=new_module,
+            names=new_names,
+            level=node.level,
+        )
+        return ast.copy_location(new_node, node)
+
+    def visit_ClassDef(self, node):
+        new_name = self.name_wildcard_mapping.get(node.name, node.name)
+        new_bases = [self.visit(child) for child in node.bases]
+        new_keywords = [self.visit(child) for child in node.keywords]
+        new_decorators = [self.visit(child) for child in node.decorator_list]
+        new_body = [self.visit(child) for child in node.body]
+        new_node = ast.ClassDef(
+            name=new_name,
+            bases=new_bases,
+            keywords=new_keywords,
+            decorator_list=new_decorators,
+            body=new_body,
+        )
+        return ast.copy_location(new_node, node)
+
+    def visit_FunctionDef(self, node):
+        new_name = self.name_wildcard_mapping.get(node.name, node.name)
+        new_args = self.visit(node.args)
+        new_body = [self.visit(child) for child in node.body]
+        new_decorator_list = [self.visit(child) for child in node.decorator_list]
+        new_returns = self.visit(node.returns)
+        new_node = ast.FunctionDef(
+            name=new_name,
+            args=new_args,
+            body=new_body,
+            decorator_list=new_decorator_list,
+            returns=new_returns,
+        )
+        return ast.copy_location(new_node, node)
+
+    def visit_AsyncFunctionDef(self, node):
+        new_name = self.name_wildcard_mapping.get(node.name, node.name)
+        new_args = self.visit(node.args)
+        new_body = [self.visit(child) for child in node.body]
+        new_decorator_list = [self.visit(child) for child in node.decorator_list]
+        new_returns = self.visit(node.returns)
+        new_node = ast.AsyncFunctionDef(
+            name=new_name,
+            args=new_args,
+            body=new_body,
+            decorator_list=new_decorator_list,
+            returns=new_returns,
+        )
+        return ast.copy_location(new_node, node)
+
+    def visit_Expr(self, node):
+        if not match_template(node.value, ast.Name(id=tuple(self.name_wildcard_mapping))):
+            node = ast.Expr(self.visit(node.value))
+            return ast.copy_location(node, node)
+
+        wildcard = self.name_wildcard_mapping[node.value.id]
+        if isinstance(wildcard.template, (ast.Name, ast.Attribute, ast.Constant)):
+            wildcard = Wildcard(wildcard.name, ast.Expr(wildcard.template), common=wildcard.common)
+
+        return wildcard
 
 
 @functools.lru_cache(maxsize=10_000)
@@ -972,10 +1240,38 @@ def compile_template(
         expand = frozenset((expand,))
 
     name_wildcard_mapping = {}
-    wildcards = {
-        **{name.strip("{}"): object for name in re.findall(r"\{\{\w+\}\}", source)},
-        **wildcards,
-    }
+    tmp_wildcards = {
+        **{name[2:-2]: object for name in re.findall(r"\{\{\w+\}\}", source)},
+        **{name[2:-3]: ZeroOrOne(object) for name in re.findall(r"\{\{\w+\?\}\}", source)},
+        **{name[2:-3]: ZeroOrMany(object) for name in re.findall(r"\{\{\w+\*\}\}", source)},
+        **{name[2:-3]: OneOrMany(object) for name in re.findall(r"\{\{\w+\+\}\}", source)},
+        **{"Ellipsis_anything": object for name in re.findall(r"\{\{\.{3}\}\}", source)},
+        **{
+            "ZeroOrOne_anything": ZeroOrOne(object)
+            for name in re.findall(r"\{\{\.{3}\?\}\}", source)
+        },
+        **{
+            "ZeroOrMany_anything": ZeroOrMany(object)
+            for name in re.findall(r"\{\{\.{3}\*\}\}", source)
+        },
+        **{
+            "OneOrMany_anything": OneOrMany(object)
+            for name in re.findall(r"\{\{\.{3}\+\}\}", source)
+    },}
+    for name, template in wildcards.items():
+        if name not in tmp_wildcards:
+            tmp_wildcards[name] = template
+        elif isinstance(tmp_wildcards[name], ZeroOrOne):
+            tmp_wildcards[name] = ZeroOrOne(template)
+        elif isinstance(tmp_wildcards[name], ZeroOrMany):
+            tmp_wildcards[name] = ZeroOrMany(template)
+        elif isinstance(tmp_wildcards[name], OneOrMany):
+            tmp_wildcards[name] = OneOrMany(template)
+        else:
+            tmp_wildcards[name] = template
+
+    wildcards = tmp_wildcards
+
     transformer = _NameWildcardTransformer(name_wildcard_mapping, expand, ignore)
     for name, template in wildcards.items():
         wildcard_placeholder_name = f"____wildcard__{name}____"
@@ -983,12 +1279,44 @@ def compile_template(
             wildcard_placeholder_name not in source
         ), f"Bad wildcard name: `{name}` found in source."
 
-        source = source.replace("{{" + name + "}}", wildcard_placeholder_name)
+        if isinstance(template, ZeroOrOne):
+            suffix = "?"
+            common = False
+        elif isinstance(template, ZeroOrMany):
+            suffix = "*"
+            common = False
+        elif isinstance(template, OneOrMany):
+            suffix = "+"
+            common = False
+        else:
+            suffix = ""
+            common = True
 
-        wildcard = Wildcard(name, transformer.visit(template))
+        if name in {
+            "ZeroOrOne_anything",
+            "ZeroOrMany_anything",
+            "OneOrMany_anything",
+            "Ellipsis_anything",
+        }:
+            replacement_name = "..."
+        else:
+            replacement_name = name
+
+        source = source.replace("{{" + replacement_name + suffix + "}}", wildcard_placeholder_name)
+
+        template = transformer.visit(template)
+        if name in {"ZeroOrOne_anything", "ZeroOrMany_anything", "OneOrMany_anything"}:
+            wildcard = template
+        elif name == "Ellipsis_anything":
+            wildcard = Wildcard(name, template, common=False)
+        elif isinstance(template, (ZeroOrOne, ZeroOrMany, OneOrMany)):
+            wildcard = type(template)(Wildcard(name, template.template, common=common))
+        else:
+            wildcard = Wildcard(name, template, common=common)
+
         name_wildcard_mapping[wildcard_placeholder_name] = wildcard
 
-    if unfilled_wildcards := re.findall(r"\{\{\w+\}\}", source):
+    if unfilled_wildcards := re.findall(r"\{\{\w+[+*?]?\}\}", source):
         raise ValueError(f"Unfilled wildcards found in source: {unfilled_wildcards}")
 
     source = textwrap.dedent(source)
@@ -1023,11 +1351,11 @@ def format_template(source: str, template_match: NamedTuple, **callables) -> str
         raise ValueError(f"Unfilled wildcards found in source: {unfilled_wildcards}")
 
     for callable_slot in re.finditer(r"\{\{\w+\((\w+,?)+\)\}\}", source):
-        callable_slot = callable_slot.group()
-        callable_name, *arg_names = re.findall(r"\w+", callable_slot)
+        callable_slot_text = callable_slot.group()
+        callable_name, *arg_names = re.findall(r"\w+", callable_slot_text)
         callable_result = callables[callable_name](
             *[template_match_asdict[name] for name in arg_names]
         )
-        source = source.replace(callable_slot, callable_result)
+        source = source.replace(callable_slot_text, callable_result)
 
     return source

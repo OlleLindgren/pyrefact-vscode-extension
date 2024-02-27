@@ -1,5 +1,5 @@
 """Cattrs validation."""
-from typing import Callable, List, Type, Union
+from typing import Callable, List, Union
 
 from .errors import (
     ClassValidationError,
@@ -10,13 +10,15 @@ from .errors import (
 __all__ = ["format_exception", "transform_error"]
 
 
-def format_exception(exc: BaseException, type: Union[Type, None]) -> str:
+def format_exception(exc: BaseException, type: Union[type, None]) -> str:
     """The default exception formatter, handling the most common exceptions.
 
     The following exceptions are handled specially:
+
     * `KeyErrors` (`required field missing`)
     * `ValueErrors` (`invalid value for type, expected <type>` or just `invalid value`)
-    * `TypeErrors` (`invalid value for type, expected <type>` and a couple special cases for iterables)
+    * `TypeErrors` (`invalid value for type, expected <type>` and a couple special
+      cases for iterables)
     * `cattrs.ForbiddenExtraKeysError`
     * some `AttributeErrors` (special cased for structing mappings)
     """
@@ -60,7 +62,7 @@ def transform_error(
     exc: Union[ClassValidationError, IterableValidationError, BaseException],
     path: str = "$",
     format_exception: Callable[
-        [BaseException, Union[Type, None]], str
+        [BaseException, Union[type, None]], str
     ] = format_exception,
 ) -> List[str]:
     """Transform an exception into a list of error messages.
@@ -71,6 +73,7 @@ def transform_error(
     By default, the error messages are in the form of `{description} @ {path}`.
 
     While traversing the exception and subexceptions, the path is formed:
+
     * by appending `.{field_name}` for fields in classes
     * by appending `[{int}]` for indices in iterables, like lists
     * by appending `[{str}]` for keys in mappings, like dictionaries
@@ -88,7 +91,7 @@ def transform_error(
         for exc, note in with_notes:
             p = f"{path}[{note.index!r}]"
             if isinstance(exc, (ClassValidationError, IterableValidationError)):
-                errors.extend(transform_error(exc, p))
+                errors.extend(transform_error(exc, p, format_exception))
             else:
                 errors.append(f"{format_exception(exc, note.type)} @ {p}")
         for exc in without:
@@ -98,7 +101,7 @@ def transform_error(
         for exc, note in with_notes:
             p = f"{path}.{note.name}"
             if isinstance(exc, (ClassValidationError, IterableValidationError)):
-                errors.extend(transform_error(exc, p))
+                errors.extend(transform_error(exc, p, format_exception))
             else:
                 errors.append(f"{format_exception(exc, note.type)} @ {p}")
         for exc in without:
