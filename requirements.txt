@@ -71,7 +71,7 @@ packaging==23.2 \
     --hash=sha256:048fb0e9405036518eaaf48a55953c750c11e1a1b68e0dd1a9d62ed0c092cfc5 \
     --hash=sha256:8c491190033a9af7e1d931d0b5dacc2ef47509b34dd0de67ed209b5203fc88c7
     # via
-    #   -r ./requirements.in
+    #   -r requirements.in
     #   black
 pathspec==0.12.1 \
     --hash=sha256:a0d503e138a4c123b27490a4f7beda6a01c6f288df0e4a8b79c7eb0dc7b4cc08 \
@@ -84,11 +84,11 @@ platformdirs==4.2.0 \
 pygls==1.3.0 \
     --hash=sha256:1b44ace89c9382437a717534f490eadc6fda7c0c6c16ac1eaaf5568e345e4fb8 \
     --hash=sha256:d4a01414b6ed4e34e7e8fd29b77d3e88c29615df7d0bbff49bf019e15ec04b8f
-    # via -r ./requirements.in
-pyrefact==97 \
-    --hash=sha256:8a06938a35939d68b0207d8437ce164fffa21119be63b8160da5691b3b775d78 \
-    --hash=sha256:b6ed2220412610f079b1b68c64423362fab47ce14854ff62438b197e54edeedb
-    # via -r ./requirements.in
+    # via -r requirements.in
+pyrefact==98 \
+    --hash=sha256:00b4ab3a270e61fca1a33889a14deb02c4007f96b5c43becd02d9c112ec5e0b5 \
+    --hash=sha256:a01f9a95d8146fc94a66389879bdf4445bc0eb517e769d068131ed86325eb826
+    # via -r requirements.in
 rmspace==7 \
     --hash=sha256:32fc696b93eb3350154df0703a31ab3d28825e0520437d2c146b8edad7b5f6cf \
     --hash=sha256:c19e1eadc648a1e5df2efef12bad5c1ec753f46e82c05262c38e221a1a21b0ab
