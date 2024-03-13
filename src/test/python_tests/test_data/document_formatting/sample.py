@@ -10,3 +10,5 @@ class Foo:
     @staticmethod
     def asdf():
         print(3)
+
+    y = 3

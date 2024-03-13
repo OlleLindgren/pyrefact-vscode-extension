@@ -26,7 +26,7 @@ import lsprotocol.types as lsp
 def test_document_formatting():
     """Test formatting a python file."""
     FORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "document_formatting" / "sample.py"
-    UNFORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "document_formatting" / "sample.unformatted"
+    UNFORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "document_formatting" / "sample.unformatted.py"
 
     contents = UNFORMATTED_TEST_FILE_PATH.read_text()
     lines = contents.splitlines(keepends=False)
@@ -75,7 +75,7 @@ def test_document_formatting():
 def test_range_formatting():
     """Test formatting a python file."""
     FORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "range_formatting" / "sample.py"
-    UNFORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "range_formatting" / "sample.unformatted"
+    UNFORMATTED_TEST_FILE_PATH = constants.TEST_DATA / "range_formatting" / "sample.unformatted.py"
 
     contents = UNFORMATTED_TEST_FILE_PATH.read_text()
 
