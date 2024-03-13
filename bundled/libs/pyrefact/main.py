@@ -11,12 +11,13 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import Collection, Iterable, Sequence
+from typing import Collection, Iterable, Mapping, Sequence
 
 import rmspace
 
 from pyrefact import abstractions, fixes
 from pyrefact import logs as logger
+import multiprocessing as mp
 from pyrefact import (
     core,
     formatting,
@@ -34,7 +35,7 @@ MAX_MODULE_PASSES = 5
 MAX_FILE_PASSES = 25
 
 
-__all__ = ["format_code", "format_file", "main"]
+__all__ = ["format_code", "format_file", "format_files", "main"]
 
 
 def _parse_args(args: Sequence[str]) -> argparse.Namespace:
@@ -49,6 +50,9 @@ def _parse_args(args: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--verbose", "-v", help="Set logging threshold to DEBUG", action="store_true"
+    )
+    parser.add_argument(
+        "--n_cores", help="Number of cores to use", type=int, default=mp.cpu_count()
     )
     return parser.parse_args(args)
 
@@ -69,6 +73,8 @@ def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
     source = fixes.undefine_unused_variables(source, preserve=preserve)
     source = fixes.delete_pointless_statements(source)
     source = fixes.move_before_loop(source)
+
+    source = object_oriented.fix_unconventional_class_definitions(source)
 
     source = fixes.delete_unused_functions_and_classes(source, preserve=preserve)
 
@@ -121,6 +127,7 @@ def _multi_run_fixes(source: str, preserve: Collection[str]) -> str:
     source = fixes.implicit_defaultdict(source)
     source = fixes.simplify_redundant_lambda(source)
     source = fixes.remove_redundant_comprehensions(source)
+    source = fixes.remove_redundant_boolop_values(source)
     source = symbolic_math.simplify_boolean_expressions(source)
     source = symbolic_math.simplify_constrained_range(source)
     source = symbolic_math.simplify_boolean_expressions_symmath(source)
@@ -212,7 +219,6 @@ def format_code(
 
         content_history.add(source)
 
-    source = abstractions.create_abstractions(source)
     source = abstractions.overused_constant(source, root_is_static=minimum_indent == 0)
     source = fixes.simplify_assign_immediate_return(source)
 
@@ -246,7 +252,7 @@ def format_code(
 
 
 def format_file(
-    filename: Path, *, preserve: Collection[str] = frozenset(), safe: bool = False
+    filename: Path, preserve: Collection[str] = frozenset(), safe: bool = False
 ) -> int:
     """Fix a file.
 
@@ -256,6 +262,7 @@ def format_file(
     Returns:
         bool: True if any changes were made
     """
+    logger.debug("Analyzing {filename}...", filename=filename)
     filename = Path(filename).resolve().absolute()
     with open(filename, "r", encoding="utf-8") as stream:
         initial_content = stream.read()
@@ -274,6 +281,86 @@ def format_file(
     return 0
 
 
+def format_files(
+    filenames,
+    *,
+    preserved_filenames: Collection[Path] = frozenset(),
+    n_cores: int = mp.cpu_count(),
+    max_passes: int = 1,
+    safe: bool = False,
+) -> bool:
+    """Fix lots of files concurrently.
+
+    Args:
+        filenames (Path): Files to fix
+
+    Keyword Args:
+        preserved_filenames (Collection[Path]): Files that depend on the files being fixed
+        n_cores (int): Number of CPU cores to use
+        max_passes (int): Maximum number of passes to make over the files
+        safe (bool): Don't delete or rename anything at the module level
+
+    Returns:
+        bool: True if any changes were made
+    """
+    used_names = _used_names_in_files(preserved_filenames)
+
+    folder_contents = collections.defaultdict(list)
+    for filename in map(Path, sorted(filenames)):
+        filename = filename.absolute()
+        folder_contents[filename.parent].append(filename)
+
+    module_changes_pass_counts = {
+        folder: (True, max_passes)
+        for folder in folder_contents
+    }
+    with mp.Pool(n_cores) as pool:
+        for pass_number in range(1, max_passes + 1):
+            files_to_format = set()
+            for folder, files_in_folder in folder_contents.items():
+                changes, passes_left = module_changes_pass_counts[folder]
+                if changes and passes_left > 0:
+                    files_to_format.update(files_in_folder)
+
+            if not files_to_format:
+                break
+
+            files_to_format = sorted(files_to_format)
+
+            filename_preserve = {
+                filename: frozenset().union(*(
+                    variables
+                    for name, variables in used_names.items()
+                    if name != _namespace_name(filename)
+                ))
+                for filename in files_to_format
+            }
+
+            results = pool.starmap(
+                format_file,
+                (
+                    (filename, filename_preserve[filename], safe)
+                    for filename in files_to_format
+                )
+            )
+            filename_changes = dict(zip(files_to_format, results))
+            for folder, files_in_folder in folder_contents.items():
+                _, passes_left = module_changes_pass_counts[folder]
+                changes = any(filename_changes.get(filename, False) for filename in files_in_folder)
+
+                module_changes_pass_counts[folder] = (changes, passes_left - 1)
+
+            logger.debug(
+                "\nPass {pass_number} / {max_passes} completed, {converged_modules} / {total_modules} modules converged.\n",
+                pass_number=pass_number,
+                max_passes=max_passes,
+                converged_modules=sum(1 for changes, _ in module_changes_pass_counts.values() if not changes),
+                total_modules=len(folder_contents),
+            )
+
+    return any(changes for changes, _ in module_changes_pass_counts.values())
+
+
 def _iter_python_files(paths: Iterable[Path]) -> Iterable[Path]:
     for path in paths:
         path = path.resolve().absolute()
@@ -290,7 +377,36 @@ def _namespace_name(filename: Path) -> str:
     return str(filename).replace(os.path.sep, ".")
 
 
-def main(args: Sequence[str] | None = None) -> int:
+def _used_names_in_file(filename: Path) -> Collection[str]:
+    with open(filename, "r", encoding="utf-8") as stream:
+        source = stream.read()
+
+    ast_root = core.parse(source)
+    imported_names = tracing.get_imported_names(ast_root)
+
+    names = []
+    for node in core.walk(ast_root, (ast.Name, ast.Attribute)):
+        if isinstance(node, ast.Name) and node.id in imported_names:
+            names.append(node.id)
+
+        elif isinstance(node, ast.Attribute):
+            # Attributes and class methods are hard to trace (it basically requires
+            # type checking), so we always add them to preserve.
+            names.append(node.attr)
+            if isinstance(node.value, ast.Name) and node.value.id in imported_names:
+                names.append(node.value.id)
+
+    return frozenset(names)
+
+
+def _used_names_in_files(filenames: Iterable[Path]) -> Mapping[str, Collection[str]]:
+    return {
+        _namespace_name(filename): _used_names_in_file(filename)
+        for filename in sorted(filenames)
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Parse command-line arguments and run pyrefact on provided files.
 
     Args:
@@ -300,34 +416,18 @@ def main(args: Sequence[str] | None = None) -> int:
         int: 0 if successful.
 
     """
-    if args is None:
-        args = sys.argv[1:]
-    args = _parse_args(args)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = _parse_args(argv)
 
     logger.set_level(logging.DEBUG if args.verbose else logging.INFO)
-
-    used_names = collections.defaultdict(set)
-    for filename in _iter_python_files(args.preserve):
-        with open(filename, "r", encoding="utf-8") as stream:
-            source = stream.read()
-        ast_root = core.parse(source)
-        imported_names = tracing.get_imported_names(ast_root)
-        for node in core.walk(ast_root, (ast.Name, ast.Attribute)):
-            if isinstance(node, ast.Name) and node.id in imported_names:
-                used_names[_namespace_name(filename)].add(node.id)
-            elif isinstance(node, ast.Attribute):
-
-                # Attributes and class methods are hard to trace (it basically requires
-                # type checking), so we always add them to preserve.
-                used_names[_namespace_name(filename)].add(node.attr)
-                if isinstance(node.value, ast.Name) and node.value.id in imported_names:
-                    used_names[_namespace_name(filename)].add(node.value.id)
 
     if args.from_stdin:
         logger.set_level(100)  # Higher than critical
         source = sys.stdin.read()
         temp_stdout = io.StringIO()
         sys_stdout = sys.stdout
+        used_names = _used_names_in_files(_iter_python_files(args.preserve))
         preserve = set.union(*used_names.values()) if used_names else set()
         try:
             sys.stdout = temp_stdout
@@ -337,36 +437,20 @@ def main(args: Sequence[str] | None = None) -> int:
         print(source)
         return 0
 
-    folder_contents = collections.defaultdict(list)
-    for filename in _iter_python_files(args.paths):
-        filename = filename.absolute()
-        folder_contents[filename.parent].append(filename)
+    filenames = tuple(_iter_python_files(args.paths))
+    preserved_filenames = frozenset(_iter_python_files(args.preserve))
 
-    max_passes = 1 if args.safe else MAX_MODULE_PASSES
-    for folder, filenames in folder_contents.items():
-        module_passes = 0
-        for module_passes in range(1, 1 + max_passes):
-            changes = False
-            for filename in filenames:
-                preserve = set()
-                for name, variables in used_names.items():
-                    if name != _namespace_name(filename):
-                        preserve.update(variables)
-                logger.info("Analyzing {filename}...", filename=filename)
-                changes |= format_file(filename, preserve=frozenset(preserve), safe=args.safe)
-
-            if not changes:
-                break
-
-        logger.debug(
-            "\nPyrefact made {module_passes} passes on {folder}.\n",
-            module_passes=module_passes,
-            folder=folder,
-        )
-
-    if sum(len(filenames) for filenames in folder_contents.values()) == 0:
+    if not filenames:
         logger.info("No files provided")
         return 1
+
+    format_files(
+        filenames,
+        preserved_filenames=preserved_filenames,
+        n_cores=args.n_cores,
+        max_passes=1 if args.safe else MAX_MODULE_PASSES,
+        safe=args.safe,
+    )
 
     return 0
 

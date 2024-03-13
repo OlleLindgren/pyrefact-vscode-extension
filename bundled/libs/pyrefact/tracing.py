@@ -5,6 +5,7 @@ import collections
 import functools
 import importlib
 import sys
+import threading
 from pathlib import Path
 from typing import Iterable, NamedTuple, Set, Sequence, Tuple
 
@@ -170,22 +171,27 @@ class _TraceResult(NamedTuple):
     ast: ast.AST
 
 
+# To prevent concurrent modification of sys.path
+SYS_PATH_LOCK = threading.Lock()
+
+
 def _trace_module_source_file(module: str) -> str | None:
-    try:
-        sys.path.append(str(Path.cwd()))
-
+    with SYS_PATH_LOCK:
         try:
-            module_spec = importlib.util.find_spec(module)
-        except ImportError:
-            return None
+            sys.path.append(str(Path.cwd()))
 
-        if module_spec is None:
-            return None
+            try:
+                module_spec = importlib.util.find_spec(module)
+            except ImportError:
+                return None
 
-        return module_spec.origin
+            if module_spec is None:
+                return None
 
-    finally:
-        sys.path.pop()
+            return module_spec.origin
+
+        finally:
+            sys.path.pop()
 
 
 @functools.lru_cache(maxsize=100_000)
@@ -372,10 +378,8 @@ def fix_starred_imports(source: str) -> str:
     undefined_names = get_undefined_variables(source)
     for name in undefined_names:
         if trace_result := trace_origin(name, source):
-            *_, node = trace_result
-
-            if core.match_template(node, template):
-                starred_import_name_mapping[node].add(name)
+            if core.match_template(trace_result.ast, template):
+                starred_import_name_mapping[trace_result.ast].add(name)
 
     for node, names in starred_import_name_mapping.items():
         if names:
@@ -408,6 +412,8 @@ def fix_reimported_names(source: str) -> str:
     if import_insert_lineno == -1:
         return source  # No imports, nothing to do
 
+    transaction = 0
+
     for node in core.walk(root, ast.ImportFrom):
         if node.module in constants.PYTHON_311_STDLIB:
             continue
@@ -438,20 +444,25 @@ def fix_reimported_names(source: str) -> str:
             asname = alias.asname
             name = alias.name
 
+            referenced_name = asname if asname else name
+
             if trace_result := trace_origin(name, module_source, __all__=True):
                 *_, module_import_node = trace_result
                 if isinstance(module_import_node, ast.ImportFrom):
                     # Remove this alias from node.names
                     # Add this alias to things that should be imported from module_import_node.module
-                    original_name = next(
-                        alias.name
-                        for alias in module_import_node.names
-                        if alias.asname == name or (alias.asname is None and alias.name == name)
-                    )
-                    if asname == original_name:
+                    if len(module_import_node.names) == 1 and module_import_node.names[0].name == "*":
+                        original_name = name
+                    else:
+                        original_name = next(
+                            alias.name
+                            for alias in module_import_node.names
+                            if alias.asname == name or (alias.asname is None and alias.name == name)
+                        )
+                    if referenced_name == original_name:
                         new_alias = ast.alias(name=original_name, asname=None)
                     else:
-                        new_alias = ast.alias(name=original_name, asname=asname)
+                        new_alias = ast.alias(name=original_name, asname=referenced_name)
 
                     module_from_imports[module_import_node.module].add(new_alias)
 
@@ -463,12 +474,12 @@ def fix_reimported_names(source: str) -> str:
                         for alias in module_import_node.names
                         if alias.asname == name or (alias.asname is None and alias.name == name)
                     )
-                    if asname == original_name:
+                    if referenced_name == original_name:
                         new_alias = ast.alias(name=original_name, asname=None)
                     else:
-                        new_alias = ast.alias(name=original_name, asname=asname)
+                        new_alias = ast.alias(name=original_name, asname=referenced_name)
 
-                    yield None, ast.Import(names=[new_alias], lineno=import_insert_lineno)
+                    yield None, ast.Import(names=[new_alias], lineno=import_insert_lineno), transaction
                 else:
                     node_names.append(alias)
             else:
@@ -476,9 +487,9 @@ def fix_reimported_names(source: str) -> str:
 
         if node_names != node.names:
             if node_names:
-                yield node, ast.ImportFrom(module=node.module, names=node_names, level=node.level)
+                yield node, ast.ImportFrom(module=node.module, names=node_names, level=node.level), transaction
             else:
-                yield node, None
+                yield node, None, transaction
 
     for module, aliases in module_from_imports.items():
         yield None, ast.ImportFrom(
@@ -486,4 +497,4 @@ def fix_reimported_names(source: str) -> str:
             names=sorted(aliases, key=lambda alias: alias.name),
             level=0,
             lineno=import_insert_lineno,
-        )
+        ), transaction

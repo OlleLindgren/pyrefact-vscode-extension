@@ -6,12 +6,12 @@ import ast
 import sys
 import warnings
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Tuple
 
 from pyrefact import core, processing
 
 
-__all__ = ["compile", "findall", "finditer", "search", "sub"]
+__all__ = ["compile", "findall", "finditer", "search", "sub", "subn", "match", "fullmatch"]
 
 warnings.filterwarnings(
     "ignore",
@@ -28,12 +28,13 @@ def findall(pattern: str | ast.AST, source: str) -> Sequence[str]:
     return [m.string for m in finditer(pattern, source)]
 
 
-def sub(pattern: str | ast.AST, repl: str, source: str, count: int = 0) -> str:
+def subn(pattern: str | ast.AST, repl: str, source: str, count: int = 0) -> Tuple[str, int]:
     count = count if count > 0 else float("inf")
+    replacements = 0
 
-    @processing.fix
+    @processing.fix(max_iter=1)
     def fix_func(src: str):
-        replacements = 0
+        nonlocal replacements
         for item in processing.find_replace(src, pattern, repl):
             if replacements >= count:
                 break
@@ -41,11 +42,58 @@ def sub(pattern: str | ast.AST, repl: str, source: str, count: int = 0) -> str:
             yield item
             replacements += 1
 
-    return fix_func(source)
+    new_source = fix_func(source)
+
+    return new_source, replacements
+
+
+def sub(pattern: str | ast.AST, repl: str, source: str, count: int = 0) -> str:
+    new_source, _ = subn(pattern, repl, source, count=count)
+    return new_source
 
 
 def search(pattern: str | ast.AST, source: str) -> core.Match | None:
     return next(finditer(pattern, source), None)
+
+
+def match(pattern: str | ast.AST, source: str) -> core.Match | None:
+    """Match against the start of the module."""
+    root = ast.parse(source)
+    if not root.body:
+        return None
+
+    for rng, _, groups in processing.find_replace(source, pattern, "", yield_match=True, root=root):
+        m = core.Match(rng, source, groups)
+
+        module_body_ranges = [core.get_charnos(node, source) for node in root.body]
+        module_body_range = core.Range(
+            start=min(rng.start for rng in module_body_ranges),
+            end=max(rng.end for rng in module_body_ranges),
+        )
+        if m.span.start == module_body_range.start:
+            return m
+
+    return None
+
+
+def fullmatch(pattern: str | ast.AST, source: str) -> core.Match | None:
+    """Match against the entire module."""
+    root = ast.parse(source)
+    if not root.body:
+        return None
+
+    for rng, _, groups in processing.find_replace(source, pattern, "", yield_match=True, root=root):
+        m = core.Match(rng, source, groups)
+
+        module_body_ranges = [core.get_charnos(node, source) for node in root.body]
+        module_body_range = core.Range(
+            start=min(rng.start for rng in module_body_ranges),
+            end=max(rng.end for rng in module_body_ranges),
+        )
+        if m.span == module_body_range:
+            return m
+
+    return None
 
 
 compile = core.compile_template  # pylint: disable=redefined-builtin,unused-variable
@@ -78,8 +126,12 @@ def _recursively_find_files(path: Path) -> Iterable[Path]:
         yield from path.rglob("*.py")
 
 
-def main(args: Sequence[str]) -> int:
-    args = _parse_args(args)
+def main(argv: Sequence[str] = None) -> int:
+    """Entrypoint for `python -m pyrefact.pattern_matching`."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    args = _parse_args(argv)
     filenames = sorted(
         {filename for path in args.path for filename in _recursively_find_files(path)}
     )
@@ -103,6 +155,16 @@ def main(args: Sequence[str]) -> int:
             return 1
 
     return 0
+
+
+def pyrefind_main() -> int:
+    """Entrypoint for the `pyrefind` command."""
+    return main(["find"] + sys.argv[1:])
+
+
+def pyreplace_main() -> int:
+    """Entrypoint for the `pyreplace` command."""
+    return main(["replace"] + sys.argv[1:])
 
 
 if __name__ == "__main__":

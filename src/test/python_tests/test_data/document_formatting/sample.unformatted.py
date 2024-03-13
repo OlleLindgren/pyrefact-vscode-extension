@@ -1,6 +1,6 @@
 import pathlib.Path as Path
 
-import os, re
+import re
 
 def asdf():
     x = None or os.getcwd()

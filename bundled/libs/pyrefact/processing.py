@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import dataclasses
 import difflib
 import functools
 import heapq
@@ -102,37 +103,70 @@ def _substitute_original_strings(original_source: str, new_source: str) -> str:
     Returns:
         str: new_source, but with consistent string formattings as in original_source
     """
+    if original_source == new_source:
+        return new_source
+
+    new_ast = core.parse(new_source)
+
+    new_string_formattings = collections.defaultdict(list)
+    for node in core.walk(new_ast, ast.Constant(value=str)):
+        new_string_formattings[node.value].append(core.get_code(node, new_source))
+
+    if not new_string_formattings:
+        return new_source
+
+    if all(
+        new_formatting in original_source
+        for new_formatting in set().union(*new_string_formattings.values())
+    ):
+        return new_source
+
     original_ast = core.parse(original_source)
 
-    original_string_formattings = collections.defaultdict(set)
+    original_string_formattings = collections.defaultdict(list)
     for node in core.walk(original_ast, ast.Constant(value=str)):
-        original_string_formattings[node.value].add(core.get_code(node, original_source))
+        original_string_formattings[node.value].append(core.get_code(node, original_source))
+
+    if not original_string_formattings:
+        return new_source
+
+    if all(
+        set(new_string_formattings[key]) <= set(original_string_formattings[key])
+        for key in new_string_formattings.keys() & original_string_formattings.keys()
+    ):
+        return new_source
 
     for value, sources in original_string_formattings.items():
         template = ast.Module(body=[ast.Expr(value=ast.Constant(value=value))])
         # Temporary set created and orignal sources object is overwritten with this, which is
         # preferable to assigning a new set. Not so elegant perhaps.
-        tmp = {
+        tmp = [
             src
             for src in sources
             if core.is_valid_python(src) and core.match_template(core.parse(src), template)
-        }
+        ]
         sources.clear()
-        sources.update(tmp)
+        sources.extend(tmp)
 
     replacements = {}
-    new_ast = core.parse(new_source)
-    for node in core.walk(new_ast, ast.Constant(value=tuple(original_string_formattings))):
+    for node in core.walk(new_ast, ast.Constant(value=tuple(set(original_string_formattings)))):
+        original_formattings = set(original_string_formattings[node.value])
+        new_formattings = set(new_string_formattings[node.value])
+        if not original_formattings:
+            continue
+        if new_formattings <= original_formattings:
+            continue
+
         # If this new string formatting doesn't exist in the orignal source, find the most
         # common orignal equivalent string formatting and use that instead.
-        original_formattings = original_string_formattings[node.value]
         new_formatting = core.get_code(node, new_source)
+        if new_formatting in original_formattings:
+            continue
+
         template = ast.Module(body=[ast.Expr(value=ast.Constant(value=node.value))])
         if (
-            original_formattings
-            and core.is_valid_python(new_formatting)
+            core.is_valid_python(new_formatting)
             and core.match_template(core.parse(new_formatting), template)
-            and new_formatting not in original_formattings
         ):
             most_common_original_formatting = collections.Counter(original_formattings).most_common(
                 1
@@ -340,6 +374,27 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
 
     elif isinstance(new, ast.AST):
         new_code = core.unparse(new)
+
+        # Add trailing newline to new_code, if it is an AST type that corresponds to a line of code
+        standalone_types = (
+            ast.Expr,
+            ast.Assign,
+            ast.If,
+            ast.For,
+            ast.While,
+            ast.Try,
+            ast.Import,
+            ast.ImportFrom,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.AsyncFor,
+            ast.AsyncWith,
+            ast.With,
+        )
+        if new_code and not new_code.endswith("\n") and isinstance(new, standalone_types):
+            new_code += "\n"
+
     else:
         raise TypeError(f"Invalid replacement type: {type(new)}")
 
@@ -376,9 +431,6 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
         new_source, old, new = _minimize_whitespace_line_differences(source, choice)
         valid = core.is_valid_python(new_source)
         _log_replacement(old, new, fix_function_name, valid)
-
-        if not valid:
-            return source
 
         return new_source
 
@@ -421,9 +473,6 @@ def _do_rewrite(source: str, rewrite: _Rewrite, *, fix_function_name: str = "") 
     valid = core.is_valid_python(new_source)
     _log_replacement(old, new, fix_function_name, valid)
 
-    if not valid:
-        return source
-
     return new_source
 
 
@@ -438,11 +487,15 @@ def _replace_nodes(source: str, replacements: Mapping[ast.AST, ast.AST | str]) -
         ),
         reverse=True,
     )
+    new_source = source
     for old, new in rewrites:
         rewrite = _Rewrite(old, new)
-        source = _do_rewrite(source, rewrite)
+        new_source = _do_rewrite(new_source, rewrite)
 
-    return source
+    if not core.is_valid_python(new_source):
+        return source
+
+    return new_source
 
 
 def _insert_nodes(source: str, additions: Collection[ast.AST]) -> str:
@@ -568,6 +621,13 @@ def _get_charnos(obj: _Rewrite, source: str) -> core.Range:
     return core.get_charnos(new, source)
 
 
+@dataclasses.dataclass(frozen=True, order=True, eq=True)
+class _Transaction:
+    group_number: int
+    transaction_number: int
+    group_name: str
+
+
 def _schedule_rewrites(
     source: str, funcs: Iterable[Tuple[Callable, Sequence, Mapping]]
 ) -> Sequence[Tuple[Any, Callable]]:
@@ -598,28 +658,29 @@ def _schedule_rewrites(
     transaction_rewrites = collections.defaultdict(list)
     for k, (func, args, kwargs) in enumerate(funcs):
         for old, new, transaction in map(fill_transaction, func(*args, **kwargs)):
-            transaction_rewrites[k, transaction, func.__name__].append(_Rewrite(old, new or ""))
+            t = _Transaction(k, transaction, func.__name__)
+            transaction_rewrites[t].append(_Rewrite(old, new or ""))
 
         seen_transactions = set()
         duplicate_transaction_keys = []
-        for key in sorted(transaction_rewrites):
-            transaction = tuple(transaction_rewrites[key])
+        for t in sorted(transaction_rewrites):
+            transaction = tuple(transaction_rewrites[t])
             if transaction in seen_transactions:
-                duplicate_transaction_keys.append(key)
+                duplicate_transaction_keys.append(t)
 
             seen_transactions.add(transaction)
 
-        for key in duplicate_transaction_keys:
-            logger.error(duplicate_error_format.format(transaction=key))
-            del transaction_rewrites[key]
+        for t in dict.fromkeys(duplicate_transaction_keys):
+            logger.error(duplicate_error_format.format(transaction=t))
+            del transaction_rewrites[t]
 
-        for transaction in sorted(transaction_rewrites):
-            if transaction[0] != k:
+        for t in sorted(transaction_rewrites):
+            if t.group_number != k:
                 continue
 
-            rewrites = transaction_rewrites[transaction]
+            rewrites = transaction_rewrites[t]
             rewrites = sorted(
-                ((_get_charnos(rewrite, source), rewrite) for rewrite in rewrites),
+                {(_get_charnos(rewrite, source), rewrite) for rewrite in rewrites},
                 key=lambda tup: tup[0],
                 reverse=True,
             )
@@ -627,9 +688,9 @@ def _schedule_rewrites(
             for i, (rewrite_range, rewrite) in enumerate(rewrites):
                 for _, (other, _) in rewrites[i + 1 :]:
                     if rewrite_range & other:
-                        logger.debug(
+                        logger.error(
                             overlap_error_format.format(
-                                transaction=transaction,
+                                transaction=t,
                                 range=tuple(rewrite_range),
                                 other=tuple(other),
                         ))
@@ -637,9 +698,9 @@ def _schedule_rewrites(
                         break
                 for _, (other, _) in scheduled_rewrites:
                     if rewrite_range & other:
-                        logger.debug(
+                        logger.error(
                             overlap_error_format.format(
-                                transaction=transaction,
+                                transaction=t,
                                 range=tuple(rewrite_range),
                                 other=tuple(other),
                         ))
@@ -649,23 +710,36 @@ def _schedule_rewrites(
                     break
 
             if not conflicting:
-                scheduled_rewrites.extend(((transaction, r) for r in rewrites))
+                scheduled_rewrites.extend(((t, r) for r in rewrites))
     if transaction_rewrites and (not scheduled_rewrites):
         logger.error("{} transactions found, but all were conflicting.", len(transaction_rewrites))
 
-    scheduled_rewrites.sort(key=lambda tup: (tup[1][0], tup[0]), reverse=True)
+    scheduled_rewrites.sort(
+        key=lambda tup: (
+            tup[1][0],  # Character numbers of rewrite, a core.Range type
+            core.unparse(tup[1][1].new) if tup[1][1].new else "",  # New code to be inserted or replaced
+            tup[0]  # Transaction number
+        ),
+        reverse=True,
+    )
     return scheduled_rewrites
 
 
 def _apply_rewrites(source: str, rewrites: Sequence[Tuple[Any, Callable]]) -> str:
-    original_source = source
-    for (*_, fix_func_name), (rewrite_range, rewrite) in rewrites:
-        source = _do_rewrite(source, rewrite, fix_function_name=fix_func_name)
+    original_source = new_source = source
+    for transaction, (_, rewrite) in rewrites:
+        new_source = _do_rewrite(new_source, rewrite, fix_function_name=transaction.group_name)
 
-    source = _substitute_original_strings(original_source, source)
-    source = _substitute_original_fstrings(original_source, source)
+    if not core.is_valid_python(new_source):
+        return source
 
-    return source
+    new_source = _substitute_original_strings(original_source, new_source)
+    new_source = _substitute_original_fstrings(original_source, new_source)
+
+    if not core.is_valid_python(new_source):
+        return source
+
+    return new_source
 
 
 def fix(*maybe_func, max_iter: int = 5) -> Callable:
